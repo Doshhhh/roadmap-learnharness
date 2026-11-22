@@ -29,12 +29,15 @@ The system may know a lot about the learner, for example from their knowledge gr
 ## 2. Framework Principles & Design Justifications
 
 ### Principle 1: Canonical Source Grounding ("No Hallucinated Curricula")
-Every learning path must be anchored to an explicit **Source Spine**:
-- **Established Canon Mode:** Grounded in 1–2 reputable textbooks, university courses, or authoritative specifications (e.g., *Axler* vs. *Strang* for Linear Algebra; *OSTEP* for Operating Systems; *CLRS* for Algorithms), with explicit chapter/section references attached to every node.
-- **User-Supplied Corpus Mode:** Built directly from a book, syllabus, or paper uploaded by the learner (converted locally via `ctx.documents.toMarkdown`), bringing in external canonical references only when needed to patch missing prerequisites.
+Every learning path must be anchored to an explicit **Source Spine**. The Path Architect builds the roadmap from the topic files of a developer roadmap (roadmap.sh, from the `nilbuild/developer-roadmap` repository), read at one commit that is pinned in the code:
+
+- **Structure comes from the topic files.** The Architect lists and reads the topics of one roadmap.
+- **Citable resources.** A saved path may cite a url only if it came from a topic file read, or a book or web result returned, in any Architect conversation since the Architect was last registered, or from a resource of a path already saved. The Architect is registered at activation when a model is saved or set, otherwise at the first Architect conversation, and again when the model or the set of research tools changes. Any other url is refused. A title must match what was read or stored, except for a url known only from a book or web result, which takes any title. Restarting the app clears the read and returned urls, but not saved paths.
+- **Books and the web enrich nodes last.** Book and web tools (for example `find_books`, `book_contents`, `web_search`) are offered only after the learner's graph and the topic and path tools, and they add detail to existing nodes; they do not build the structure.
+- **Pinned, so the spine is stable.** Every request reads the same commit, so the sources do not change under the learner.
 
 **Why we chose this:**
-> Classic textbooks and battle-tested courses represent decades of refined pedagogical sequencing: their authors have already discovered which definitions must precede which theorems, where notation breaks down, and which counterexamples prevent standard traps. Prompting an LLM to invent a curriculum from scratch discards that accumulated craft and risks subtle dependency inversions. Anchoring to canon keeps notation coherent and gives the learner a trustworthy external reference outside chat.
+> A pinned commit means the same topic files back every path the Architect writes, and each saved resource can be traced to a file that was read or a result that was returned.
 
 ---
 
@@ -123,7 +126,7 @@ Because learners and domains vary widely, artifacts are **configurable** (global
 
 - **Learning Path:** A persistent, tree-structured curriculum workspace centered on a specific learning goal, anchored to reputable source material, and serving as the parent hub from which topic study and practice chats are launched.
 - **Path Architect:** The plugin-managed conversational agent (`ctx.agents`) used when pressing **"Create a Path"** (or refining an existing path). It clarifies goals and background, selects or ingests the canonical source spine, and emits the structured path.
-- **Canonical Source Spine:** The primary authoritative textbook(s), university course(s), specification(s), or learner-uploaded corpus that govern the path's conceptual ordering, notation, and section anchors.
+- **Canonical Source Spine:** The developer-roadmap topic files, read at one pinned commit, from which the Architect builds a path's structure.
 - **Source Anchor:** The specific chapter, lecture, section, or page range in the Canonical Source Spine associated with an individual node (e.g., *OSTEP Ch. 26–27*).
 - **Child Session:** A native LearnHarness **Teaching** or **Practice** chat linked beneath a specific Path Node. Child sessions inherit a tailored brief from their parent node and report progression, errors, and non-stick pivot suggestions back to the Path.
 

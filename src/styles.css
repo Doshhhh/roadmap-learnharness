@@ -93,10 +93,6 @@
   color: var(--rm-muted);
 }
 
-.rm-crumb-sep {
-  color: var(--rm-faint);
-}
-
 .rm-crumb-path {
   display: inline-flex;
   align-items: center;
@@ -294,6 +290,15 @@
   font-weight: 600;
 }
 
+.rm-empty-actions {
+  margin-top: 16px;
+}
+
+.rm-empty-hint {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
 .rm-canvas {
   position: absolute;
   inset: 0;
@@ -405,6 +410,16 @@
   flex: none;
   color: var(--rm-muted);
   font-size: 11px;
+}
+
+/* A node the learner's graph already covers: a small review tag after the title. */
+.rm-node-review {
+  flex: none;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--rm-panel-2);
+  color: var(--rm-muted);
+  font-size: 10px;
 }
 
 .rm-node-warn {
@@ -548,6 +563,20 @@
   text-overflow: ellipsis;
 }
 
+.rm-box-focus {
+  border-color: var(--rm-acc);
+}
+
+/* Bracket around interchangeable alternatives that share a column. */
+.rm-alt-group {
+  position: absolute;
+  width: 4px;
+  border: 1px solid var(--rm-faint);
+  border-right: 0;
+  border-radius: 3px 0 0 3px;
+  pointer-events: none;
+}
+
 /* Zoom + legend ------------------------------------------------------- */
 
 .rm-zoom {
@@ -634,6 +663,16 @@
   border-top-style: dashed;
 }
 
+.rm-legend-arrow {
+  color: var(--rm-faint);
+  font-size: 12px;
+}
+
+.rm-legend-note {
+  color: var(--rm-muted);
+  font-size: 11.5px;
+}
+
 .rm-legend-alt {
   width: 16px;
   color: var(--rm-faint);
@@ -688,9 +727,45 @@
   font-size: 12px;
 }
 
+.rm-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+}
+
+.rm-tree-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--rm-muted);
+  cursor: pointer;
+}
+
+.rm-tree-toggle:hover {
+  background: var(--rm-panel-2);
+}
+
+.rm-tree-toggle-empty {
+  cursor: default;
+}
+
+.rm-tree-module-tag,
+.rm-tree-also {
+  color: var(--rm-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .rm-node.rm-tree-node {
   position: relative;
-  margin-left: 28px;
   border-color: transparent;
   background: transparent;
 }
@@ -942,6 +1017,7 @@
 .rm-insp-foot {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 12px 18px 14px;
   border-top: 1px solid var(--rm-line);
@@ -949,6 +1025,14 @@
 
 .rm-insp-foot .rm-push {
   margin-left: auto;
+}
+
+.rm-insp-foot .rm-insp-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--rm-muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* Errors ---------------------------------------------------------------- */
@@ -1102,6 +1186,33 @@
 
 .rm-status-errors .rm-warn-icon {
   color: var(--rm-warn);
+}
+
+.rm-status-next {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.rm-status-next-label {
+  flex: none;
+  font-weight: 600;
+}
+
+.rm-status-next-item {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.rm-status-next-why {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--rm-muted);
 }
 
 @media (max-width: 980px) {
@@ -1355,6 +1466,13 @@
   margin: 0;
   font-size: 0.8rem;
   color: var(--muted-foreground, var(--foreground));
+}
+
+.lp-architect-log {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--muted-foreground, var(--foreground));
+  overflow-wrap: anywhere;
 }
 
 .lp-status-busy {

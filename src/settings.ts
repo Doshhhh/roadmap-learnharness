@@ -308,6 +308,14 @@ export function mountSettingsPage(
         value: display.showOptional,
         onChange: (value: boolean) => void saveSettings({ ...settings, display: { ...currentDisplay(), showOptional: value } }),
       },
+      {
+        key: "display-pattern-hints",
+        type: "toggle" as const,
+        label: t("s.patternHints"),
+        description: t("s.patternHintsDesc"),
+        value: display.patternHints,
+        onChange: (value: boolean) => void saveSettings({ ...settings, display: { ...currentDisplay(), patternHints: value } }),
+      },
     ];
     if (displayRows) displayRows.update({ rows });
     else displayRows = ctx.ui.mountSettingsRows(displayRowsHost, { rows }, { signal });

@@ -6,9 +6,10 @@
 import type { LearningPath, PathModule, PathNode } from "../domain.ts";
 import { locale, t } from "../i18n.ts";
 import type { MessageKey } from "../i18n.ts";
+import type { NodePrerequisites } from "../node-catalog-link.ts";
 import { ICONS, setIcon, statusIcon } from "./icons.ts";
-import { isDone, layoutRoadmap, moduleCounts, nodeRole } from "./roadmap-layout.ts";
-import type { NodeRole, PlacedModule, RoadmapLayout } from "./roadmap-layout.ts";
+import { buildDependencyGraph, isDone, layoutRoadmap, moduleCounts } from "./roadmap-layout.ts";
+import type { PlacedModule, RoadmapLayout } from "./roadmap-layout.ts";
 
 export type ViewMode = "graph" | "tree";
 
@@ -20,6 +21,8 @@ export interface CanvasState {
   readonly showOptional: boolean;
   /** The legend shows only when the side panel is closed, as in the mockups. */
   readonly showLegend: boolean;
+  /** Prerequisites per node. Absent: module order (the view has no catalog). */
+  readonly prerequisites?: readonly NodePrerequisites[];
 }
 
 export interface CanvasCallbacks {
@@ -32,11 +35,8 @@ export interface RoadmapCanvas {
   dispose(): void;
 }
 
-const ROLE_LABEL: Record<NodeRole, MessageKey> = {
-  order: "box.inOrder",
-  extra: "box.extra",
-  consolidation: "box.consolidation",
-};
+/** Indent per tree level, in px. */
+const TREE_INDENT = 18;
 
 function el<K extends keyof HTMLElementTagNameMap>(document: Document, tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -98,6 +98,8 @@ export function createRoadmapCanvas(
   let ty = 0;
   let placedPathId: string | null = null;
   let focusModuleId: string | null = null;
+  /** Tree rows whose children the learner collapsed; everything else starts expanded. */
+  const collapsedTreeNodes = new Set<string>();
   let disposed = false;
 
   const applyTransform = (): void => {
@@ -234,6 +236,7 @@ export function createRoadmapCanvas(
     button.append(icon, el(document, "span", "rm-node-title", node.title));
     const tag = node.alternativeGroup ? t("mark.alternativeShort") : node.optional ? t("mark.optionalShort") : null;
     if (tag) button.append(el(document, "span", "rm-node-tag", tag));
+    if (node.reviewMark) button.append(el(document, "span", "rm-node-review", t("mark.shortReviewShort")));
     const errors = unresolved(node);
     if (errors > 0) {
       const warn = el(document, "span", "rm-node-warn");
@@ -260,28 +263,10 @@ export function createRoadmapCanvas(
     return parts.join(" · ");
   };
 
+  /** A module frame: the band around its nodes. Its header toggles the focus highlight. */
   const renderModule = (placed: PlacedModule): HTMLElement => {
     const { module } = placed;
-    const status = moduleState(module);
-    if (!placed.expanded) {
-      const button = el(document, "button", `rm-main rm-main-${status}`);
-      button.type = "button";
-      button.dataset.moduleId = module.id;
-      button.style.left = `${placed.x}px`;
-      button.style.top = `${placed.y}px`;
-      button.style.width = `${placed.w}px`;
-      const { done, total } = moduleCounts(module);
-      button.append(
-        el(document, "span", "rm-main-title", module.title),
-        el(document, "span", "rm-main-count", placed.final && done === 0 ? t("mark.final") : `${done} / ${total}`),
-      );
-      button.title = module.goal ?? module.title;
-      button.addEventListener("click", () => {
-        if (!disposed && !signal.aborted) callbacks.toggleModule(module.id);
-      }, { signal });
-      return button;
-    }
-    const box = el(document, "div", "rm-box");
+    const box = el(document, "div", placed.expanded ? "rm-box rm-box-focus" : "rm-box");
     box.dataset.moduleId = module.id;
     box.style.left = `${placed.x}px`;
     box.style.top = `${placed.y}px`;
@@ -295,12 +280,6 @@ export function createRoadmapCanvas(
       if (!disposed && !signal.aborted) callbacks.toggleModule(module.id);
     }, { signal });
     box.append(head);
-    for (const label of placed.labels) {
-      const node = el(document, "div", "rm-box-label", t(ROLE_LABEL[label.text]));
-      node.style.left = `${label.x - placed.x}px`;
-      node.style.top = `${label.y - placed.y}px`;
-      box.append(node);
-    }
     if (placed.errorLine) {
       const first = module.nodes.flatMap((node) => node.errors.filter((entry) => !entry.resolved));
       const line = el(document, "div", "rm-box-error");
@@ -333,22 +312,43 @@ export function createRoadmapCanvas(
       line.setAttribute("y2", String(edge.y2));
       if (edge.dashed) line.setAttribute("class", "rm-dashed");
       svg.append(line);
-      if (edge.arrow) {
-        const head = document.createElementNS(ns, "path");
-        head.setAttribute("d", `M${edge.x2 - 4} ${edge.y2 + 6} L${edge.x2} ${edge.y2} L${edge.x2 + 4} ${edge.y2 + 6}`);
-        head.setAttribute("class", "rm-arrow");
-        svg.append(head);
-      }
+      // Arrowhead at the dependent end: two wings laid back from the tip along the line.
+      const length = Math.hypot(edge.x2 - edge.x1, edge.y2 - edge.y1) || 1;
+      const ux = (edge.x2 - edge.x1) / length;
+      const uy = (edge.y2 - edge.y1) / length;
+      const baseX = edge.x2 - ux * 7;
+      const baseY = edge.y2 - uy * 7;
+      const wingX = -uy * 4;
+      const wingY = ux * 4;
+      const head = document.createElementNS(ns, "path");
+      head.setAttribute(
+        "d",
+        `M${baseX + wingX} ${baseY + wingY} L${edge.x2} ${edge.y2} L${baseX - wingX} ${baseY - wingY}`,
+      );
+      head.setAttribute("class", "rm-arrow");
+      svg.append(head);
     }
     return svg;
   };
 
   const renderGraph = (current: CanvasState): void => {
-    layout = layoutRoadmap(current.path, { expandedModuleId: current.expandedModuleId, showOptional: current.showOptional });
+    layout = layoutRoadmap(current.path, {
+      expandedModuleId: current.expandedModuleId,
+      showOptional: current.showOptional,
+      prerequisites: current.prerequisites,
+    });
     stage.style.width = `${layout.width}px`;
     stage.style.height = `${layout.height}px`;
     const children: Element[] = [renderEdges(layout)];
     for (const placed of layout.modules) children.push(renderModule(placed));
+    for (const group of layout.groups) {
+      const bracket = el(document, "div", "rm-alt-group");
+      bracket.style.left = `${group.x}px`;
+      bracket.style.top = `${group.y1}px`;
+      bracket.style.height = `${group.y2 - group.y1}px`;
+      bracket.title = t("mark.alternative");
+      children.push(bracket);
+    }
     for (const placed of layout.nodes) {
       children.push(nodeButton(placed.node, placed.node.id === current.selectedNodeId, placed.x, placed.y, placed.w));
     }
@@ -373,27 +373,58 @@ export function createRoadmapCanvas(
     }
   };
 
+  /** Nested tree: each node sits under its deepest prerequisite, one indent per dependency level.
+   * Any number of children; a row's toggle collapses only that row's children. */
   const renderTree = (current: CanvasState): void => {
-    const list = el(document, "div", "rm-tree-list");
+    const graph = buildDependencyGraph(current.path, { showOptional: current.showOptional, prerequisites: current.prerequisites });
+    const byId = new Map<string, { node: PathNode; module: PathModule }>();
     for (const module of current.path.modules) {
-      const status = moduleState(module);
-      const open = module.id === current.expandedModuleId || module.nodes.some((node) => node.id === current.selectedNodeId);
-      const head = el(document, "button", `rm-tree-module rm-main-${status}`);
-      head.type = "button";
-      const chevron = el(document, "span", "rm-tree-chevron");
-      setIcon(chevron, open ? ICONS.chevronDown : ICONS.chevronRight);
-      const { done, total } = moduleCounts(module);
-      head.append(chevron, el(document, "span", "rm-tree-module-title", module.title), el(document, "span", "rm-tree-count", t("tree.nodes", { done, total })));
-      head.addEventListener("click", () => callbacks.toggleModule(module.id), { signal });
-      list.append(head);
-      if (!open) continue;
-      for (const node of module.nodes) {
-        if (!current.showOptional && node.optional) continue;
-        const row = nodeButton(node, node.id === current.selectedNodeId, null, null, null);
-        row.classList.add("rm-tree-node", `rm-role-${nodeRole(node)}`);
-        list.append(row);
-      }
+      for (const node of module.nodes) byId.set(node.id, { node, module });
     }
+    const children = new Map<string, string[]>();
+    const roots: string[] = [];
+    for (const id of graph.nodeIds) {
+      const parentId = graph.parent.get(id) ?? null;
+      if (parentId === null) roots.push(id);
+      else children.set(parentId, [...(children.get(parentId) ?? []), id]);
+    }
+    const list = el(document, "div", "rm-tree-list");
+    const addRow = (id: string, level: number): void => {
+      const entry = byId.get(id);
+      if (!entry) return;
+      const kids = children.get(id) ?? [];
+      const expanded = !collapsedTreeNodes.has(id);
+      const row = el(document, "div", "rm-tree-row");
+      row.style.paddingLeft = `${level * TREE_INDENT}px`;
+      if (kids.length > 0) {
+        const toggle = el(document, "button", "rm-tree-toggle");
+        toggle.type = "button";
+        toggle.title = expanded ? t("tree.collapse") : t("tree.expand");
+        toggle.setAttribute("aria-label", toggle.title);
+        setIcon(toggle, expanded ? ICONS.chevronDown : ICONS.chevronRight);
+        toggle.addEventListener("click", () => {
+          if (disposed || signal.aborted) return;
+          if (collapsedTreeNodes.has(id)) collapsedTreeNodes.delete(id);
+          else collapsedTreeNodes.add(id);
+          if (state) renderTree(state);
+        }, { signal });
+        row.append(toggle);
+      } else {
+        row.append(el(document, "span", "rm-tree-toggle rm-tree-toggle-empty"));
+      }
+      const button = nodeButton(entry.node, entry.node.id === current.selectedNodeId, null, null, null);
+      button.classList.add("rm-tree-node");
+      row.append(button, el(document, "span", "rm-tree-module-tag", entry.module.title));
+      const parentId = graph.parent.get(id) ?? null;
+      const others = graph.edges
+        .filter((edge) => edge.to === id && edge.from !== parentId)
+        .map((edge) => byId.get(edge.from)?.node.title)
+        .filter((title): title is string => title !== undefined);
+      if (others.length > 0) row.append(el(document, "span", "rm-tree-also", t("tree.alsoAfter", { titles: others.join(", ") })));
+      list.append(row);
+      if (expanded) for (const kid of kids) addRow(kid, level + 1);
+    };
+    for (const id of roots) addRow(id, 0);
     tree.replaceChildren(list);
   };
 
@@ -410,6 +441,8 @@ export function createRoadmapCanvas(
       span.append(el(document, "span", dashed ? "rm-legend-line rm-dashed-line" : "rm-legend-line"), el(document, "span", undefined, t(key)));
       return span;
     };
+    const arrowItem = el(document, "span", "rm-legend-item");
+    arrowItem.append(el(document, "span", "rm-legend-arrow", "→"), el(document, "span", undefined, t("legend.arrow")));
     const alt = el(document, "span", "rm-legend-item");
     alt.append(el(document, "span", "rm-legend-alt", t("mark.alternativeShort")), el(document, "span", undefined, t("mark.alternative")));
     const swatch = (state: "consolidated" | "in_progress" | "unstarted" | "skipped", key: MessageKey): HTMLElement => {
@@ -428,6 +461,15 @@ export function createRoadmapCanvas(
       alt,
       item(ICONS.flag, "legend.checkpoint"),
       item(ICONS.warn, "legend.error", "rm-legend-warn"),
+      arrowItem,
+      el(
+        document,
+        "span",
+        "rm-legend-item rm-legend-note",
+        state !== null && state.path.modules.some((module) => module.nodes.some((node) => node.prerequisites !== undefined))
+          ? t("legend.prerequisitesNote")
+          : t("legend.moduleOrder"),
+      ),
     );
   };
 

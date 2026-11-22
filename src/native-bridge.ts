@@ -27,7 +27,12 @@ import {
   formatSourceAnchor,
 } from "./domain.ts";
 import type { ChildSessionKind, LearningPath, PathNode } from "./domain.ts";
-import { buildChildSessionBrief } from "./framework.ts";
+import {
+  REDERIVE_DEFERRAL,
+  REDERIVE_PROGRESS_SENTENCE,
+  ROADMAP_SAFETY_SENTENCE,
+  buildChildSessionBrief,
+} from "./framework.ts";
 import {
   appendError,
   appendPivot,
@@ -50,12 +55,17 @@ export const NATIVE_BRIDGE_INSTRUCTIONS = [
   "If roadmap_get_brief is not in your current tool set, ignore this entire section and follow your normal instructions.",
   "",
   "When the tools are present:",
-  "- Call roadmap_get_brief before teaching so the node goal, canonical source anchor, micro-priming hook, meso-interleaving callbacks, unresolved watchpoints and artifact configuration shape this session. Stay inside that anchor and notation.",
+  "- Call roadmap_get_brief before teaching so the node goal, canonical source anchor, micro-priming hook, meso-interleaving callbacks, unresolved watchpoints and artifact configuration shape this session. Stay inside that anchor and notation. The brief sets content, not question format.",
   "- Call roadmap_update_progress when the learner's status genuinely changes: in_progress while understanding is forming, consolidated only when they can reconstruct, apply and connect the idea. Include an artifactNote only when the artifact was actually produced.",
   "- Call roadmap_log_error for each diagnosed cognitive root cause (misconception, discrimination_error, prerequisite_gap, procedural_slip, cue_failure). Use upstreamNodeId only when the failure belongs to an interleaved earlier node.",
   "- Call roadmap_suggest_pivot only when a topic is not sticking for a specific diagnosed reason. It records an advisory pending proposal (bridge, contrast or skill) and never changes, inserts or reorders path content. The learner decides.",
   "",
+  "Question format (count, question type, answer form) is not set by this section. If the learner or an installed session plugin has set a format, follow it; the micro-priming hook and interleaving examples are content only.",
   "Never invent a node id, never write progress for a different node in this session, and never restructure the path yourself.",
+  "",
+  REDERIVE_DEFERRAL,
+  REDERIVE_PROGRESS_SENTENCE,
+  ROADMAP_SAFETY_SENTENCE,
 ].join("\n");
 
 export interface NativeBridgeOptions {

@@ -10,12 +10,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  ARCHITECT_DEFINITION_ID,
-  DEFAULT_SOURCE_CHUNK_CHARS,
-  MAX_SOURCE_CHUNK_CHARS,
-} from "../src/architect-agent.ts";
-import { ARCHITECT_FILE, SOURCES_DIRECTORY } from "../src/store.ts";
+import { ARCHITECT_DEFINITION_ID } from "../src/architect-agent.ts";
+import { ARCHITECT_FILE, ROADMAPS_DIRECTORY, SOURCES_DIRECTORY } from "../src/store.ts";
 import { AT, makePath, rawPath } from "./fixtures.ts";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { PluginAgentTool } from "learnharness-plugin-api";
@@ -67,11 +63,11 @@ test("Architect definition is reconstructed on activation and released on cleanu
   assert.ok(definition);
   assert.deepEqual(
     (definition.tools ?? []).map((tool) => tool.name),
-    ["list_uploaded_sources", "read_uploaded_source_chunk", "get_learning_path", "save_learning_path", "save_learning_path_json",
-      // Hybrid research (the default): notes plus the keyless open catalogs.
-      "list_research_notes", "read_research_note", "read_page", "find_books", "book_contents", "find_papers", "search_wikipedia",
-      // 0.4.0: the dossier hand-off into the Error Ledger.
-      "apply_dossier_misconceptions"],
+    // Issue #19 upstream mode: the graph and the two developer-roadmap reads first, then the path tools.
+    // Books and web (the research tools) come last and only enrich existing nodes.
+    ["read_learner_graph", "list_roadmap_topics", "read_roadmap_topic", "get_learning_path", "save_learning_path",
+      "save_learning_path_json",
+      "list_research_notes", "read_research_note", "read_page", "find_books", "book_contents", "find_papers", "search_wikipedia"],
   );
   assert.match(definition.instructions, /Roadmap Architect/);
   assert.deepEqual(definition.model, {
@@ -142,68 +138,17 @@ test("saving converted sources is bounded, hash-deduplicated and announced", asy
   await assert.rejects(h.call("sources.save", { name: "x.md", markdown: 42 }), /markdown must be a string/);
 });
 
-test("read_uploaded_source_chunk streams bounded windows and never the whole book", async (t) => {
+test("upstream mode: the Architect is not offered uploaded sources, and the saved source is kept", async (t) => {
   const h = host(t);
   await createConversation(h);
-  const markdown = Array.from({ length: 3000 }, (_, index) => `line ${index}`).join("\n");
-  const saved = await saveSource(h, "long-book.md", markdown);
-
-  const listed = await h.runTool<ToolResult>("list_uploaded_sources", {});
-  assert.equal(listed.isError, undefined);
-  assert.deepEqual(listed.details.sources, [
-    {
-      sourceId: saved.reference.sourceId,
-      name: "long-book.md",
-      byteSize: Buffer.byteLength(markdown, "utf8"),
-      uploadedAt: listed.details.sources[0].uploadedAt,
-      sha256: saved.reference.sha256,
-    },
-  ]);
-
-  const firstChunk = await h.runTool<ToolResult>("read_uploaded_source_chunk", {
-    sourceId: saved.reference.sourceId,
-  });
-  assert.equal(firstChunk.isError, undefined);
-  assert.equal(firstChunk.details.chunkStart, 0);
-  assert.equal(firstChunk.details.chunkEnd, DEFAULT_SOURCE_CHUNK_CHARS);
-  assert.equal(firstChunk.details.totalCharacters, markdown.length);
-  assert.equal(firstChunk.details.nextOffset, DEFAULT_SOURCE_CHUNK_CHARS);
-  assert.equal(firstChunk.details.text, markdown.slice(0, DEFAULT_SOURCE_CHUNK_CHARS));
-
-  const rest = await h.runTool<ToolResult>("read_uploaded_source_chunk", {
-    sourceId: saved.reference.sourceId,
-    offset: firstChunk.details.nextOffset,
-    limit: MAX_SOURCE_CHUNK_CHARS,
-  });
-  assert.equal(rest.details.chunkStart, DEFAULT_SOURCE_CHUNK_CHARS);
-  assert.equal(rest.details.chunkEnd, Math.min(DEFAULT_SOURCE_CHUNK_CHARS + MAX_SOURCE_CHUNK_CHARS, markdown.length));
-  assert.equal(rest.details.nextOffset, null, "a short corpus finishes inside the second window");
-
-  const pastEnd = await h.runTool<ToolResult>("read_uploaded_source_chunk", {
-    sourceId: saved.reference.sourceId,
-    offset: markdown.length + 100,
-    limit: 10,
-  });
-  assert.equal(pastEnd.details.text, "");
-  assert.equal(pastEnd.details.nextOffset, null);
-  assert.equal(pastEnd.details.chunkStart, markdown.length);
-
-  const unknown = await h.runTool<ToolResult>("read_uploaded_source_chunk", {
-    sourceId: "0f8fad5b-d9cb-469f-a165-70867728950e",
-  });
-  assert.equal(unknown.isError, true);
-  assert.match(unknown.details.error, /Unknown uploaded source/);
-
-  const invalid = await h.runTool<ToolResult>("read_uploaded_source_chunk", { sourceId: "../outside" });
-  assert.equal(invalid.isError, true);
-  assert.match(invalid.details.error, /Invalid source ID/);
-
-  const tooLarge = await h.runTool<ToolResult>("read_uploaded_source_chunk", {
-    sourceId: saved.reference.sourceId,
-    limit: MAX_SOURCE_CHUNK_CHARS + 1,
-  });
-  assert.equal(tooLarge.isError, true);
-  assert.match(tooLarge.details.error, /limit must be an integer/);
+  const saved = await saveSource(h, "long-book.md", "line 0\nline 1");
+  await assert.rejects(async () => h.runTool("list_uploaded_sources", {}), /Unknown Architect tool/);
+  await assert.rejects(
+    async () => h.runTool("read_uploaded_source_chunk", { sourceId: saved.reference.sourceId }),
+    /Unknown Architect tool/,
+  );
+  const listed = await h.call<{ sources: { sourceId: string }[] }>("sources.list");
+  assert.equal(listed.sources.length, 1);
 });
 
 test("save_learning_path validates, links the conversation and preserves identity on update", async (t) => {
@@ -677,7 +622,6 @@ test("the Architect saves roadmap marks, outcomes and resources, and refinement 
         sourceAnchor: { reference: "K&R", chapter: "1" } },
       { type: "concept", title: "Pointers", goal: "Explain what a pointer stores",
         outcomes: ["Explain what a pointer stores", "Read int *p"],
-        resources: [{ title: "cppreference: pointers", kind: "article", url: "https://en.cppreference.com/w/c/language/pointer", free: true }],
         sourceAnchor: { reference: "K&R", chapter: "5" } },
       { type: "bridge", title: "Valgrind", goal: "Find leaks", optional: true,
         sourceAnchor: { reference: "K&R", chapter: "7" } },
@@ -693,8 +637,18 @@ test("the Architect saves roadmap marks, outcomes and resources, and refinement 
   assert.equal(gcc.alternativeGroup, "compiler");
   assert.equal(clang.alternativeGroup, "compiler");
   assert.deepEqual(pointers.outcomes, ["Explain what a pointer stores", "Read int *p"]);
-  assert.equal(pointers.resources[0].kind, "article");
   assert.equal(valgrind.optional, true);
+
+  // Upstream mode: a resource link must come from a topic file read in this conversation.
+  const link = { title: "cppreference: pointers", kind: "article", url: "https://en.cppreference.com/w/c/language/pointer", free: true };
+  const uncited = {
+    ...draft,
+    modules: [{ ...draft.modules[0], nodes: draft.modules[0]!.nodes.map((node, index) => (index === 2 ? { ...node, resources: [link] } : node)) }],
+  };
+  const refusedLink = await h.runTool<ToolResult>("save_learning_path", uncited);
+  assert.equal(refusedLink.isError, true);
+  assert.match(refusedLink.content[0]?.text ?? "", /cppreference/);
+  assert.equal((await h.call<{ paths: unknown[] }>("paths.list")).paths.length, 1, "nothing written");
 
   // The outline the Architect reads back carries the marks it must echo.
   const outline = await h.runTool<ToolResult>("get_learning_path", { id: path.id });
@@ -712,4 +666,21 @@ test("the Architect saves roadmap marks, outcomes and resources, and refinement 
   assert.equal(after[2].title, "Pointers!");
   assert.deepEqual(after[2].outcomes, pointers.outcomes);
   assert.equal(after[3].optional, true);
+});
+
+test("paths.list names a roadmap file the store refused, so the hub can show it", async (t) => {
+  const directory = temporaryDirectory(t);
+  const first = host(t, directory);
+  await createConversation(first);
+  await first.runTool("save_learning_path", rawPath());
+  first.close();
+  const roadmaps = path.join(directory, ROADMAPS_DIRECTORY);
+  const [file] = fs.readdirSync(roadmaps);
+  const filename = path.join(roadmaps, file!);
+  fs.writeFileSync(filename, "<<<<<<< HEAD\n{}\n=======\n{}\n>>>>>>> origin/main\n");
+
+  const reopened = host(t, directory);
+  const result = await reopened.call<{ paths: unknown[]; refused: { filename: string; code: string }[] }>("paths.list");
+  assert.deepEqual(result.paths, []);
+  assert.deepEqual(result.refused, [{ filename, code: "corrupt" }]);
 });

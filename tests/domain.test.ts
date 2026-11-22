@@ -244,3 +244,35 @@ test("plugin settings validate artifact defaults per node type", () => {
   const result = validatePluginSettings({ artifactDefaults: { concept: "video" } });
   assert.equal(result.ok, false);
 });
+
+test("a node's optional catalog topic link validates; old data without it still passes", () => {
+  assert.equal(validateLearningPath(rawPath()).ok, true);
+
+  const linked = rawPath();
+  linked.modules[0].nodes[0].catalogTopic = { roadmap: "frontend", slug: "closures" };
+  const parsed = parseLearningPath(linked);
+  assert.deepEqual(parsed.modules[0]!.nodes[0]!.catalogTopic, { roadmap: "frontend", slug: "closures" });
+  assert.equal(parseLearningPath(rawPath()).modules[0]!.nodes[0]!.catalogTopic, undefined);
+});
+
+test("a malformed catalog topic link is rejected", () => {
+  const badSlug = rawPath();
+  badSlug.modules[0].nodes[0].catalogTopic = { roadmap: "frontend", slug: "Closures Topic" };
+  assert.throws(() => parseLearningPath(badSlug), /catalogTopic\.slug: must be a lowercase-hyphen catalog slug/);
+
+  const emptyRoadmap = rawPath();
+  emptyRoadmap.modules[0].nodes[0].catalogTopic = { roadmap: "", slug: "closures" };
+  assert.throws(() => parseLearningPath(emptyRoadmap), /catalogTopic\.roadmap/);
+
+  const missingSlug = rawPath();
+  missingSlug.modules[0].nodes[0].catalogTopic = { roadmap: "frontend" };
+  assert.throws(() => parseLearningPath(missingSlug), /catalogTopic\.slug/);
+
+  const nullLink = rawPath();
+  nullLink.modules[0].nodes[0].catalogTopic = null;
+  assert.throws(() => parseLearningPath(nullLink), /catalogTopic: must be an object/);
+
+  const stringLink = rawPath();
+  stringLink.modules[0].nodes[0].catalogTopic = "frontend/closures";
+  assert.throws(() => parseLearningPath(stringLink), /catalogTopic: must be an object/);
+});

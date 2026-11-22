@@ -6,6 +6,17 @@ import type { KeyEngine, PluginSettings, ResearchPreset, ResearchSettings } from
 import { t } from "./i18n.ts";
 import type { MessageKey } from "./i18n.ts";
 
+/** Tool name (as the Architect sees it) to the plain-words capability shown in settings. */
+const CAPABILITY_KEYS: Partial<Record<string, MessageKey>> = {
+  read_page: "r.cap.pages",
+  find_books: "r.cap.books",
+  book_contents: "r.cap.books",
+  find_papers: "r.cap.papers",
+  search_wikipedia: "r.cap.encyclopedia",
+  web_search: "r.cap.web",
+  deep_research: "r.cap.deep",
+};
+
 export interface ResearchStatus {
   readonly effective: ResearchSettings;
   readonly keys: Record<KeyEngine, boolean>;
@@ -141,8 +152,9 @@ export function mountResearchSettings(
         extra.append(remove);
       }
     }
-    const active = status.tools.filter((name) => name !== "list_research_notes" && name !== "read_research_note");
-    extra.append(make(document, "p", "rm-research-tools", active.length ? t("r.activeTools", { tools: active.join(", ") }) : t("r.offline")));
+    // Shown as what the Architect can do, never as tool names. Saved-note tools have no entry, so they do not count as a source.
+    const capabilities = [...new Set(status.tools.map((name) => CAPABILITY_KEYS[name]).filter((key): key is MessageKey => key !== undefined).map((key) => t(key)))];
+    extra.append(make(document, "p", "rm-research-tools", capabilities.length ? t("r.activeTools", { list: capabilities.join(", ") }) : t("r.offline")));
     if (status.notes.length) {
       const heading = make(document, "h3", "rm-research-notes-title", t("r.notes"));
       const notes = make(document, "ul", "rm-research-notes");

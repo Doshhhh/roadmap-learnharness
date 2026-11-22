@@ -8,7 +8,7 @@
  * Controlled: `render` receives the authoritative path and node; edits are
  * reported to the caller.
  */
-import type { PluginFrontendContext, PluginWidgetHandle } from "learnharness-plugin-api";
+import type { PluginDialogProps, PluginFrontendContext, PluginWidgetHandle } from "learnharness-plugin-api";
 import { ARTIFACT_CATALOG, PROGRESSION_STATES, artifactCatalogEntry, recommendedArtifactsFor } from "../domain.ts";
 import type {
   ArtifactType,
@@ -22,6 +22,11 @@ import type {
 } from "../domain.ts";
 import { locale, t } from "../i18n.ts";
 import type { MessageKey } from "../i18n.ts";
+import type { Mastery } from "../learner-map.ts";
+import { nodeEvidence } from "../node-evidence.ts";
+import { nodePatternHintKey } from "../pattern-hint.ts";
+import type { NodeProposition } from "../node-propositions.ts";
+import type { EvidenceSuggestion, NodeEvidence } from "../node-evidence.ts";
 import type { SessionStatus } from "../session-types.ts";
 import { button, el, shortDate } from "./dom.ts";
 import { createErrorLedger } from "./error-ledger.ts";
@@ -50,6 +55,12 @@ export interface NodeInspectorOptions {
   findResources?(node: PathNode): void | Promise<void>;
   /** Where the error ledger renders (the "Errors" tab); defaults to the node panel. */
   errorsContainer?: HTMLElement;
+  /** Knowledge Graph mastery for "studied elsewhere" evidence, read on each render. Absent: no evidence block. */
+  knowledgeMastery?(): readonly Mastery[];
+  /** Read on each render: whether the one-line question-template hint shows. Absent means shown. */
+  showPatternHints?(): boolean;
+  /** The learner's graph propositions linked to this node, for the Flashcard seed action. Null when the read fails. */
+  nodePropositions?(node: PathNode): Promise<readonly NodeProposition[] | null>;
 }
 
 export interface NodeInspector {
@@ -163,6 +174,73 @@ export function createNodeInspector(
     return row;
   };
 
+  /** Evidence from the Knowledge Graph. Each choice goes through the same status path as the status menu. */
+  const evidenceSection = (node: PathNode, evidence: NodeEvidence): void => {
+    const wrapper = section(t("evi.title"));
+    const level = t(`evi.${evidence.level}` as MessageKey);
+    const first = shortDate(evidence.firstAt, localeTag());
+    const last = shortDate(evidence.lastAt, localeTag());
+    wrapper.append(el(document, "p", "rm-why", t("evi.summary", { level, n: evidence.sessionCount, first, last })));
+    wrapper.append(el(document, "p", "rm-muted", t("evi.note")));
+    // Seen is evidence text only: the action buttons are offered for practiced and mastered alone.
+    if (evidence.level === "seen") return;
+
+    const choices = el(document, "div", "rm-chips");
+    const offer = (target: EvidenceSuggestion, label: string): void => {
+      const suggested = evidence.suggestion === target;
+      if (suggested) choices.append(el(document, "span", "rm-tag", t("evi.suggested")));
+      const choice = button(document, label, () => void options.updateNode({ progression: target }), scoped(), {
+        variant: suggested ? "primary" : "outline",
+      });
+      choice.disabled = node.progression === target;
+      choices.append(choice);
+    };
+    offer("consolidated", t("evi.markConsolidated"));
+    offer("skipped", t("evi.skip"));
+    wrapper.append(choices);
+  };
+
+  /**
+   * Flashcard seed: lists the learner's own graph propositions for the node. The Flashcards plugin's review lives
+   * in its own view, which this plugin cannot open or detect, so the dialog says where to find it.
+   */
+  const showPropositions = async (node: PathNode): Promise<void> => {
+    if (!options.nodePropositions) return;
+    let found: readonly NodeProposition[] | null;
+    try {
+      found = await options.nodePropositions(node);
+    } catch {
+      found = null;
+    }
+    if (disposed || signal.aborted) return;
+    let dialog: PluginWidgetHandle<PluginDialogProps> | null = null;
+    dialog = ctx.ui.openDialog(
+      {
+        title: t("flash.title"),
+        content: (content, contentSignal) => {
+          content.append(el(document, "h2", "rm-insp-title", t("flash.title")));
+          content.append(el(document, "p", "rm-why", t("flash.reviewNote")));
+          if (found === null) {
+            content.append(el(document, "p", "rm-muted", t("flash.unavailable")));
+          } else if (found.length === 0) {
+            content.append(el(document, "p", "rm-muted", t("flash.none")));
+          } else {
+            const list = el(document, "div", "rm-list");
+            for (const proposition of found) {
+              list.append(item(null, proposition.name, proposition.statement));
+            }
+            content.append(list);
+          }
+          const actions = el(document, "div", "rm-chips");
+          actions.append(button(document, t("flash.close"), () => dialog?.dispose(), contentSignal, { variant: "outline" }));
+          content.append(actions);
+        },
+      },
+      { signal: scoped() },
+    );
+    handles.push(dialog);
+  };
+
   const renderSelected = (path: LearningPath, node: PathNode): void => {
     root.dataset.nodeId = node.id;
     body.append(el(document, "h2", "rm-insp-title", node.title));
@@ -194,8 +272,11 @@ export function createNodeInspector(
         node.alternativeGroup ? t("mark.alternative") : node.optional ? t("mark.optional") : t("mark.recommended"),
       ),
     );
+    if (node.reviewMark) meta.append(el(document, "span", "rm-tag", t("mark.shortReview")));
     body.append(meta);
     body.append(el(document, "p", "rm-insp-goal", node.goal));
+    const evidence = nodeEvidence(node, options.knowledgeMastery?.() ?? []);
+    if (evidence) evidenceSection(node, evidence);
     body.append(pivotContainer);
     pivotBanner.render(path, node);
 
@@ -206,6 +287,11 @@ export function createNodeInspector(
 
     const source = section(t("insp.source"));
     source.append(item(ICONS.book, formatAnchor(node.sourceAnchor), node.lightPreReading ? t("insp.preReading", { text: node.lightPreReading }) : undefined));
+
+    if (node.codeRepo) {
+      const repo = section(t("insp.codeRepo"));
+      repo.append(item(null, node.codeRepo.location));
+    }
 
     if (node.resources?.length) {
       const resources = section(t("insp.resources"));
@@ -318,6 +404,11 @@ export function createNodeInspector(
     artifactSection.append(select);
     if (node.artifactConfig?.instructions) artifactSection.append(item(ICONS.article, node.artifactConfig.instructions));
     artifactSection.append(el(document, "p", "rm-why", t("insp.why", { text: t(`artWhy.${entry.type}` as MessageKey) })));
+    if (effective === "retrieval_cue" && options.nodePropositions) {
+      artifactSection.append(
+        button(document, t("flash.open"), () => void showPropositions(node), scoped(), { variant: "outline" }),
+      );
+    }
 
     footer.append(
       button(document, t("action.lesson"), () => void options.startSession("teaching"), scoped(), { variant: "primary" }),
@@ -331,6 +422,8 @@ export function createNodeInspector(
         }),
       );
     }
+    const hintKey = options.showPatternHints?.() === false ? null : nodePatternHintKey(node.type);
+    if (hintKey) footer.append(el(document, "p", "rm-insp-hint", t(hintKey)));
   };
 
   return {

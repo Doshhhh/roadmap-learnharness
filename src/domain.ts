@@ -14,6 +14,10 @@ export type NodeType = (typeof NODE_TYPES)[number];
 export const PROGRESSION_STATES = ["unstarted", "in_progress", "consolidated", "skipped"] as const;
 export type ProgressionState = (typeof PROGRESSION_STATES)[number];
 
+/** Marks a node the learner's graph already covers: a short review, not new material (#17). */
+export const REVIEW_MARKS = ["short-review"] as const;
+export type ReviewMark = (typeof REVIEW_MARKS)[number];
+
 export const CHILD_SESSION_KINDS = ["teaching", "practice"] as const;
 export type ChildSessionKind = (typeof CHILD_SESSION_KINDS)[number];
 
@@ -149,9 +153,11 @@ export interface DisplaySettings {
   readonly language: LanguagePreference;
   readonly defaultView: ViewMode;
   readonly showOptional: boolean;
+  /** Show the one-line question-template suggestion in the node panel. */
+  readonly patternHints: boolean;
 }
 
-export const DEFAULT_DISPLAY: DisplaySettings = { language: "auto", defaultView: "graph", showOptional: true };
+export const DEFAULT_DISPLAY: DisplaySettings = { language: "auto", defaultView: "graph", showOptional: true, patternHints: true };
 
 /** How the Architect reaches beyond its own memory. Every channel can be switched off;
  * with all of them off the Architect works offline from what the model knows. */
@@ -262,6 +268,11 @@ export interface PivotSuggestion {
   readonly insertedNodeId?: string;
 }
 
+/** A folder path or git URL. Roadmap only passes it along; the repo's own tools read it. */
+export interface CodeRepoLink {
+  readonly location: string;
+}
+
 export interface PathNode {
   readonly id: string;
   readonly type: NodeType;
@@ -272,6 +283,11 @@ export interface PathNode {
   readonly lightPreReading?: string;
   /** Meso-interleaving callbacks: earlier nodes to weave into this one. */
   readonly interleavesNodeIds: readonly string[];
+  /**
+   * Node ids in the same roadmap this node depends on. Absent on older data: arrows then follow
+   * module order. An empty array is a deliberate root, a node that starts a branch.
+   */
+  readonly prerequisites?: readonly string[];
   readonly progression: ProgressionState;
   /** Per-node override; absent or null inherits the path/plugin default. */
   readonly artifactConfig?: ArtifactConfig | null;
@@ -282,11 +298,23 @@ export interface PathNode {
   readonly pivotSuggestions: readonly PivotSuggestion[];
   /** Not needed for the goal: drawn dashed, never counted against the learner. */
   readonly optional?: boolean;
+  /** Set in code on nodes the learner's graph already covers (never by the model). */
+  readonly reviewMark?: ReviewMark;
   /** Nodes sharing a group are interchangeable choices ("GCC or Clang"). */
   readonly alternativeGroup?: string;
   /** Concrete abilities after the node ("After this node I can …"). */
   readonly outcomes?: readonly string[];
   readonly resources?: readonly NodeResource[];
+  /** The roadmap.sh catalog topic this node covers. Absent on nodes linked before issue #6. */
+  readonly catalogTopic?: CatalogTopicLink;
+  /** A code repository the learner studies for this node; the brief names it, nothing else reads it. */
+  readonly codeRepo?: CodeRepoLink;
+}
+
+/** A node's link to one catalog topic, by roadmap slug and topic slug. */
+export interface CatalogTopicLink {
+  readonly roadmap: string;
+  readonly slug: string;
 }
 
 export interface PathModule {
@@ -639,6 +667,29 @@ function readPivotSuggestion(value: unknown, path: string): PivotSuggestion {
   };
 }
 
+const CATALOG_SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+function readCatalogTopicLink(value: unknown, path: string): CatalogTopicLink {
+  const record = readObject(value, path);
+  const slugOf = (field: unknown, name: string): string => {
+    const slug = readString(field, `${path}.${name}`, { max: 120 });
+    if (!CATALOG_SLUG_PATTERN.test(slug)) fail(`${path}.${name}`, "must be a lowercase-hyphen catalog slug");
+    return slug;
+  };
+  return { roadmap: slugOf(record.roadmap, "roadmap"), slug: slugOf(record.slug, "slug") };
+}
+
+/** Longest accepted repo location: a folder path or a git URL. */
+export const CODE_REPO_LOCATION_MAX = 500;
+
+function readCodeRepoLink(value: unknown, path: string): CodeRepoLink {
+  const record = readObject(value, path);
+  const location = readString(record.location, `${path}.location`, { max: CODE_REPO_LOCATION_MAX });
+  // Stricter than readString: tabs and line breaks are not allowed in a path or URL here.
+  if (/[\u0000-\u001F\u007F-\u009F]/.test(location)) fail(`${path}.location`, "must not contain control characters");
+  return { location };
+}
+
 function readPathNode(value: unknown, path: string): PathNode {
   const record = readObject(value, path);
   return {
@@ -659,6 +710,11 @@ function readPathNode(value: unknown, path: string): PathNode {
       `${path}.interleavesNodeIds`,
       readId,
     ),
+    ...(record.prerequisites === undefined
+      ? {}
+      : {
+          prerequisites: readStringArray(record.prerequisites, `${path}.prerequisites`, readId),
+        }),
     progression: readEnum(record.progression, PROGRESSION_STATES, `${path}.progression`),
     ...(record.artifactConfig === undefined
       ? {}
@@ -683,6 +739,9 @@ function readPathNode(value: unknown, path: string): PathNode {
     ...(record.optional === undefined || record.optional === false
       ? {}
       : { optional: readBoolean(record.optional, `${path}.optional`) }),
+    ...(record.reviewMark === undefined
+      ? {}
+      : { reviewMark: readEnum(record.reviewMark, REVIEW_MARKS, `${path}.reviewMark`) }),
     ...(record.alternativeGroup === undefined || record.alternativeGroup === null || record.alternativeGroup === ""
       ? {}
       : { alternativeGroup: readString(record.alternativeGroup, `${path}.alternativeGroup`, { max: 100 }) }),
@@ -705,6 +764,12 @@ function readPathNode(value: unknown, path: string): PathNode {
             .map((entry, index) => readNodeResource(entry, `${path}.resources[${index}]`))
             .slice(0, 8),
         }),
+    ...(record.catalogTopic === undefined
+      ? {}
+      : { catalogTopic: readCatalogTopicLink(record.catalogTopic, `${path}.catalogTopic`) }),
+    ...(record.codeRepo === undefined
+      ? {}
+      : { codeRepo: readCodeRepoLink(record.codeRepo, `${path}.codeRepo`) }),
   };
 }
 
@@ -797,8 +862,47 @@ function assertPathGraph(path: LearningPath): void {
           fail(`node "${node.id}".pivotSuggestions`, `unknown inserted node id "${pivot.insertedNodeId}"`);
         }
       }
+      for (const prerequisite of node.prerequisites ?? []) {
+        if (prerequisite === node.id) {
+          fail(`node "${node.id}".prerequisites`, "must not depend on the node itself");
+        }
+        if (!nodes.has(prerequisite)) {
+          fail(`node "${node.id}".prerequisites`, `unknown node id "${prerequisite}"`);
+        }
+      }
     }
   }
+  const cycle = findPrerequisiteCycle(nodes);
+  if (cycle !== null) {
+    fail("path.modules", `prerequisites form a cycle: ${cycle.join(" -> ")}`);
+  }
+}
+
+/** The first prerequisite cycle, as node ids from the cycle's start back to itself, or null. */
+function findPrerequisiteCycle(nodes: ReadonlyMap<string, PathNode>): string[] | null {
+  const state = new Map<string, "open" | "done">();
+  const walk = (id: string, stack: string[]): string[] | null => {
+    state.set(id, "open");
+    stack.push(id);
+    for (const prerequisite of nodes.get(id)?.prerequisites ?? []) {
+      if (state.get(prerequisite) === "open") {
+        return [...stack.slice(stack.indexOf(prerequisite)), prerequisite];
+      }
+      if (state.get(prerequisite) === undefined) {
+        const found = walk(prerequisite, stack);
+        if (found !== null) return found;
+      }
+    }
+    stack.pop();
+    state.set(id, "done");
+    return null;
+  };
+  for (const id of nodes.keys()) {
+    if (state.has(id)) continue;
+    const found = walk(id, []);
+    if (found !== null) return found;
+  }
+  return null;
 }
 
 /** Validate a learning path without throwing; invalid input yields precise issues. */
@@ -860,6 +964,7 @@ function readDisplaySettings(value: unknown, path: string): DisplaySettings {
     language: record.language === undefined ? DEFAULT_DISPLAY.language : readEnum(record.language, LANGUAGE_PREFERENCES, `${path}.language`),
     defaultView: record.defaultView === undefined ? DEFAULT_DISPLAY.defaultView : readEnum(record.defaultView, VIEW_MODES, `${path}.defaultView`),
     showOptional: record.showOptional === undefined ? DEFAULT_DISPLAY.showOptional : readBoolean(record.showOptional, `${path}.showOptional`),
+    patternHints: record.patternHints === undefined ? DEFAULT_DISPLAY.patternHints : readBoolean(record.patternHints, `${path}.patternHints`),
   };
 }
 

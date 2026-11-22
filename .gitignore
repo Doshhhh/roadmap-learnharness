@@ -1,8 +1,14 @@
+plugin-sync.sh
+.idea.txt
+/learnharness-plugins
+.DS_Store
 node_modules/
 dist/
-# LearnHarness plugin SDK: obtained separately, never committed.
 .sdk/
-learnharness-plugins-*/
+.claude/
+.claude
+claude
 
 # Local-only code for the owner's private LearnHarness fork. Never publish.
 src/local-only/
+learnharness-plugins-*/

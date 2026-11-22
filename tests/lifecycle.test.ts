@@ -97,12 +97,12 @@ test("backend enable, disable and re-enable are idempotent and keep stored data"
   activateBackend(host.ctx);
   assert.ok(host.handlers.size > 0);
   assert.ok(host.definitions.has("path-architect"));
-  // The node bridge, the research-session tool and roadmap proposals.
-  assert.equal(host.toolContributions.length, 3);
-  assert.equal(host.instructions.length, 3);
+  // The node bridge, the research-session tool, roadmap proposals and the read-only gap tool.
+  assert.equal(host.toolContributions.length, 4);
+  assert.equal(host.instructions.length, 4);
   assert.deepEqual(await host.call("paths.status"), {
-    id: "roadmap",
-    version: "0.4.0",
+    id: "roadmap-learnharness",
+    version: "0.4.1",
     active: true,
   });
   assert.deepEqual(
@@ -310,7 +310,7 @@ test("install:local updates dist, preserves data and runs without warnings", (t)
   const workspace = temporaryDirectory(t);
   const pluginsDirectory = path.join(workspace, "plugins");
   fs.mkdirSync(pluginsDirectory);
-  const installed = path.join(pluginsDirectory, "roadmap");
+  const installed = path.join(pluginsDirectory, "roadmap-learnharness");
   const installedDist = path.join(installed, "dist");
   const installedData = path.join(installed, "data");
 

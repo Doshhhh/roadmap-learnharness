@@ -34,12 +34,16 @@ test("settings page edits justified artifact defaults and persists them", async 
     assert.match(fixture.root.textContent ?? "", /Roadmap/);
     assert.match(fixture.root.textContent ?? "", /Why each artifact is recommended/);
     assert.match(fixture.root.textContent ?? "", /a small program, interpreter or test case/);
-    assert.match(fixture.root.textContent ?? "", /labelled nodes and arrows/);
+    assert.match(fixture.root.textContent ?? "", /labelled arrows/);
     assert.match(fixture.root.textContent ?? "", /from a blank page in your own words/);
+    // The research line names capabilities, never tool names (the fixture reports read_page and find_books).
+    const researchLine = fixture.root.querySelector(".rm-research-tools")?.textContent ?? "";
+    assert.equal(researchLine, "Now the Architect can use: public pages, book catalogs and contents.");
+    assert.doesNotMatch(researchLine, /read_page|find_books/);
 
     const artifactRows = fixture.find(
       "mountSettingsRows",
-      (record) => record.props.rows.length === 6,
+      (record) => record.props.rows.some((row: { key: string }) => row.key === "artifact-concept"),
     );
     const concept = artifactRow(artifactRows, "artifact-concept");
     assert.equal(concept.type, "dropdown");
@@ -58,11 +62,11 @@ test("settings page edits justified artifact defaults and persists them", async 
     assert.equal(fixture.settings.artifactDefaults.concept, "derivation_trace");
     assert.deepEqual(
       fixture.calls.filter((call) => call.name === "settings.save").at(-1)?.input,
-      { artifactDefaults: { concept: "derivation_trace" }, display: { language: "en", defaultView: "graph", showOptional: true } },
+      { artifactDefaults: { concept: "derivation_trace" }, display: { language: "en", defaultView: "graph", showOptional: true, patternHints: true } },
     );
     const updated = artifactRow(liveRows(fixture, "artifact-concept"), "artifact-concept");
     assert.equal(updated.value, "derivation_trace");
-    assert.match(updated.description, /checks every step of the reasoning/);
+    assert.match(updated.description, /a step-by-step worked derivation that you check line by line/);
     assert.match(fixture.root.textContent ?? "", /Settings saved/);
 
     // Clearing the plugin default falls back to the framework recommendation.

@@ -8,7 +8,7 @@ progress and mistakes back to the map.
 
 ![Roadmap with the node panel](docs/roadmap.png)
 
-Roadmap is a LearnHarness Community plugin (`apiVersion: 1`, id `roadmap`,
+Roadmap is a LearnHarness Community plugin (`apiVersion: 1`, id `roadmap-learnharness`,
 LearnHarness 0.6.0 or newer). The interface is available in English and
 Russian (Settings → Roadmap → Interface language; *Auto* follows the system).
 
@@ -103,19 +103,34 @@ kept as research notes (listed in settings) that the Architect reads.
 1. Download `roadmap-<version>.zip` from the latest release.
 2. In LearnHarness open **Settings → Community plugins** and copy the plugins
    directory path.
-3. Unzip there so that `<plugins-directory>/roadmap/dist/manifest.json` exists.
+3. Unzip there so that `<plugins-directory>/roadmap-learnharness/dist/manifest.json` exists.
 4. Press **Refresh**, enable **Roadmap**, and restart LearnHarness.
 
-To update, replace `roadmap/dist/` and keep `roadmap/data/` (your roadmaps).
+To update, replace `roadmap-learnharness/dist/` and keep `roadmap-learnharness/data/` (your roadmaps).
+The plugin id changed from `roadmap`; on first start it copies this fork's
+roadmap files from `<plugins-directory>/roadmap/data/` if the new data folder is empty. The old
+folder is never changed.
 
 ### From source
 
+The plugin API types are not on npm. In LearnHarness open **Settings → Community
+plugins** and use **Download authoring skill**, then extract the downloaded
+`learnharness-plugins/` folder into this repo (it is git-ignored).
+
 ```sh
-git clone https://github.com/Doshhhh/roadmap-learnharness.git
+git clone https://github.com/808arc/roadmap-learnharness.git
 cd roadmap-learnharness
+npm run sdk      # copies learnharness-plugins/types into .sdk/
 npm ci
 npm run install:local -- "<plugins-directory>"
 ```
+
+`install:local` builds `dist/` and copies it into `<plugins-directory>/roadmap/`.
+It never touches `data/`, so your roadmaps are kept.
+
+For a quick rebuild-and-copy loop during development, `./plugin-sync.sh` builds
+and copies the whole plugin folder into LearnHarness. It deletes the existing
+copy first, including `data/`, so back up roadmaps you care about before running it.
 
 ### Coming from Learning Paths
 
@@ -142,11 +157,12 @@ Settings → Roadmap:
 
 ## Data
 
-Everything lives in the plugin's own data folder (`<plugins>/roadmap/data/`):
-`learning-paths.json`, `settings.json`, `architect.json`, `sources/`, `research/`
-(research notes), `research-chats.json`, `secrets/` (only if you save your own
-search key) and the host-managed `agents/`. Records are versioned and written atomically; corrupt or
-newer files are refused rather than overwritten. Roadmap never deletes native
+Everything lives in the plugin's own data folder (`<plugins>/roadmap-learnharness/data/`):
+`roadmaps/` (one file per roadmap, named by a hash of its id), `roadmaps-index.json`, `settings.json`,
+`architect.json`, `sources/`, `research/` (research notes), `research-chats.json`, `secrets/` (only if
+you save your own search key) and the host-managed `agents/`. An older `learning-paths.json` is read
+once to write the roadmap files; it stays in the data folder as `learning-paths.json.migrated`.
+Records are versioned and written atomically; corrupt or newer files are refused rather than overwritten. Roadmap never deletes native
 chats or Knowledge Graph records.
 
 ## Development

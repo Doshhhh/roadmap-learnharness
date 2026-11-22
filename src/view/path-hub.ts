@@ -24,6 +24,9 @@ import type {
 import { ARTIFACT_TYPES, DEFAULT_DISPLAY, PROGRESSION_STATES, artifactCatalogEntry, recommendedArtifactsFor } from "../domain.ts";
 import { locale, resolveLocale, setLocale, t } from "../i18n.ts";
 import type { NativeSessionHost } from "../native-session-host.ts";
+import type { Mastery } from "../learner-map.ts";
+import type { NodeProposition } from "../node-propositions.ts";
+import { nextUpForPath, type NextRecommendation } from "../node-next.ts";
 import { createSessionLauncher } from "../session-launcher.ts";
 import { consumePathHubTarget, subscribePathHubTarget } from "../session-navigation.ts";
 import type { SessionStatus } from "../session-types.ts";
@@ -54,8 +57,23 @@ export interface PathSummary {
   readonly architectChatId?: string | null;
 }
 
+/** A roadmap file the store refused (for example after a Git merge); it is hidden and never written. */
+interface RefusedRoadmap {
+  readonly filename: string;
+  readonly code: string;
+}
+
 interface PathsListResult {
   readonly paths: readonly PathSummary[];
+  readonly refused?: readonly RefusedRoadmap[];
+}
+
+/** The hub banner text for refused roadmap files, or null when every file read cleanly. */
+function refusedNotice(refused: readonly RefusedRoadmap[] | undefined): string | null {
+  if (!refused || refused.length === 0) return null;
+  return refused
+    .map((entry) => t(entry.code === "newer-schema" ? "error.refusedNewer" : "error.refused", { file: entry.filename }))
+    .join(" ");
 }
 
 interface PathResult {
@@ -71,6 +89,15 @@ function nodeById(path: LearningPath, nodeId: string | null): PathNode | null {
     if (node) return node;
   }
   return null;
+}
+
+/** Next-up recommendations. A roadmap the ranking cannot read yields none rather than breaking the view. */
+function nextRecommendations(path: LearningPath, mastery: readonly Mastery[]): NextRecommendation[] {
+  try {
+    return nextUpForPath(path, undefined, mastery);
+  } catch {
+    return [];
+  }
 }
 
 export function countNodes(path: LearningPath): { total: number; consolidated: number; inProgress: number; errors: number } {
@@ -116,14 +143,13 @@ export function mountPathHub(
   // ── Toolbar ──────────────────────────────────────────────────────────
   const toolbar = el(document, "header", "rm-top");
   const crumb = el(document, "div", "rm-crumb");
-  const crumbRoot = el(document, "span", "rm-crumb-root");
   const pathSwitch = el(document, "button", "rm-crumb-path");
   pathSwitch.type = "button";
   const pathSwitchTitle = el(document, "span");
   const pathSwitchChevron = el(document, "span", "rm-crumb-chevron");
   setIcon(pathSwitchChevron, ICONS.chevronDown);
   pathSwitch.append(pathSwitchTitle, pathSwitchChevron);
-  crumb.append(crumbRoot, el(document, "span", "rm-crumb-sep", "/"), pathSwitch);
+  crumb.append(pathSwitch);
   const spine = el(document, "span", "rm-top-spine");
   const segment = el(document, "div", "rm-seg");
   const graphTab = el(document, "button");
@@ -166,11 +192,15 @@ export function mountPathHub(
   statusSummary.setAttribute("aria-live", "polite");
   const statusErrors = el(document, "button", "rm-status-errors");
   statusErrors.type = "button";
-  status.append(el(document, "span", "rm-grow"), statusSummary, statusErrors);
+  const statusNext = el(document, "div", "rm-status-next");
+  statusNext.hidden = true;
+  status.append(el(document, "span", "rm-grow"), statusSummary, statusNext, statusErrors);
   root.append(status);
 
   // ── State ────────────────────────────────────────────────────────────
   let summaries: PathSummary[] = [];
+  /** Banner text for refused roadmap files from the last list; shown whenever no other error is. */
+  let refused: string | null = null;
   let path: LearningPath | null = null;
   let selectedPathId: string | null = null;
   let selectedNodeId: string | null = null;
@@ -181,6 +211,9 @@ export function mountPathHub(
   let sideOpen = true;
   let autoLoadedPathId: string | null = null;
   let createdPathId: string | null = null;
+  /** Graph topics the learner has studied, from the backend brief; read only for the empty state. */
+  let graphTopics = 0;
+  let emptyControls = new AbortController();
   let loadToken = 0;
   let disposed = false;
   let startingSession = false;
@@ -188,6 +221,10 @@ export function mountPathHub(
   let toolbarControls = new AbortController();
   const mountedLocale = locale();
   const chatStatuses = new Map<string, SessionStatus>();
+  // Knowledge Graph mastery for evidence and next-up. A failed read leaves `masteryReady` false: no
+  // evidence, and no next-up list, rather than a ranking that treats every topic as unseen.
+  let mastery: readonly Mastery[] = [];
+  let masteryReady = false;
 
   const pane = createArchitectPane(ctx, architectPanel, signal);
   const launcher = createSessionLauncher(ctx, { host: options.sessionHost });
@@ -215,6 +252,9 @@ export function mountPathHub(
     unlinkSession(chatId) {
       return unlinkSession(chatId);
     },
+    knowledgeMastery: () => mastery,
+    nodePropositions: (node) => readNodePropositions(node),
+    showPatternHints: () => display.patternHints,
     chatStatus: chatStatuses,
     selectNode(nodeId) {
       selectNode(nodeId);
@@ -270,7 +310,6 @@ export function mountPathHub(
 
   // ── Rendering ────────────────────────────────────────────────────────
   function renderToolbar(): void {
-    crumbRoot.textContent = t("crumb.root");
     pathSwitchTitle.textContent = path?.title ?? summaries.find((entry) => entry.id === selectedPathId)?.title ?? "—";
     pathSwitch.disabled = summaries.length === 0;
     spine.textContent = path ? spineLabel(path) : "";
@@ -291,17 +330,30 @@ export function mountPathHub(
     refine.disabled = path === null;
     actions.replaceChildren(
       refine,
-      button(document, t("action.new"), () => {
-        setTab("architect");
-        pane.startNew();
-      }, scoped, { variant: "outline" }),
+      button(document, t("action.new"), () => startNewRoadmap(), scoped, { variant: "outline" }),
     );
+  }
+
+  /** The create-roadmap path: open the Architect on a fresh draft. */
+  function startNewRoadmap(): void {
+    setTab("architect");
+    pane.startNew();
+  }
+
+  /** "Build from my graph": a fresh Architect draft whose first message carries the learner's graph (learnerGraph). */
+  async function buildFromGraph(): Promise<void> {
+    if (disposed || signal.aborted) return;
+    setTab("architect");
+    pane.startNew();
+    await pane.discuss(t("graphEmpty.prompt"), { learnerGraph: true });
   }
 
   function renderSide(): void {
     if (disposed || signal.aborted) return;
     const node = path ? nodeById(path, selectedNodeId) : null;
     const errors = node ? node.errors.filter((entry) => !entry.resolved).length : 0;
+    if (errors === 0 && tab === "errors") tab = "node";
+    errorsTabButton.hidden = errors === 0;
     nodeTabButton.textContent = t("tab.node");
     errorsTabButton.textContent = errors > 0 ? `${t("tab.errors")} · ${errors}` : t("tab.errors");
     architectTabButton.textContent = t("tab.architect");
@@ -321,12 +373,34 @@ export function mountPathHub(
     if (disposed || signal.aborted) return;
     empty.hidden = path !== null;
     if (!path) {
-      empty.replaceChildren(el(document, "h2", "rm-empty-title", t("empty.title")), el(document, "p", "rm-muted", t("empty.text")));
+      renderEmpty();
       canvasHost.dataset.empty = "true";
       return;
     }
     delete canvasHost.dataset.empty;
     canvas.render({ path, selectedNodeId, expandedModuleId, view, showOptional: display.showOptional, showLegend: side.hidden });
+  }
+
+  /** Empty state: the Architect text, plus "Build from my graph" once the graph has a topic. */
+  function renderEmpty(): void {
+    emptyControls.abort();
+    emptyControls = new AbortController();
+    const scoped = AbortSignal.any([signal, emptyControls.signal]);
+    const hasGraph = graphTopics > 0;
+    const build = button(document, t("graphEmpty.build"), () => void buildFromGraph(), scoped, {
+      variant: "outline",
+      icon: ICONS.sparkle,
+      className: "rm-empty-build",
+    });
+    build.disabled = !hasGraph;
+    const actions = el(document, "div", "rm-empty-actions");
+    actions.append(build);
+    if (!hasGraph) actions.append(el(document, "p", "rm-muted rm-empty-hint", t("graphEmpty.hint")));
+    empty.replaceChildren(
+      el(document, "h2", "rm-empty-title", t("empty.title")),
+      el(document, "p", "rm-muted", t("empty.text")),
+      actions,
+    );
   }
 
   function renderInspector(): void {
@@ -351,6 +425,26 @@ export function mountPathHub(
     const icon = el(document, "span", "rm-warn-icon");
     setIcon(icon, ICONS.warn);
     statusErrors.append(icon, el(document, "span", undefined, errors === 1 ? t("foot.error1") : t("foot.errors", { n: errors })));
+    renderNext();
+  }
+
+  /** "Next up": selecting an item opens it in the node panel, which holds Lesson and Practice. Nothing is gated. */
+  function renderNext(): void {
+    statusNext.replaceChildren();
+    const recommendations = path && masteryReady ? nextRecommendations(path, mastery) : [];
+    statusNext.hidden = recommendations.length === 0;
+    if (!path || recommendations.length === 0) return;
+    statusNext.append(el(document, "span", "rm-status-next-label", t("next.title")));
+    for (const entry of recommendations) {
+      const target = nodeById(path, entry.nodeId);
+      if (!target) continue;
+      const item = el(document, "span", "rm-status-next-item");
+      item.append(
+        button(document, target.title, () => selectNode(target.id), signal, { variant: "ghost", className: "rm-status-next-node" }),
+        el(document, "span", "rm-status-next-why", entry.reasons.map((reason) => t(reason.key, reason.vars)).join(" · ")),
+      );
+      statusNext.append(item);
+    }
   }
 
   /** Light themes need a darker accent; read the effective page background. */
@@ -436,6 +530,7 @@ export function mountPathHub(
       const listed = await ctx.call<PathsListResult>("paths.list");
       if (!live(token)) return;
       summaries = [...(listed.paths ?? [])];
+      refused = refusedNotice(listed.refused);
       if (createdPathId) {
         const created = summaries.find((entry) => entry.id === createdPathId);
         createdPathId = null;
@@ -459,12 +554,18 @@ export function mountPathHub(
       if (path) {
         await refreshChatStatuses(token, path.id);
         if (!live(token)) return;
+        const read = await readKnowledgeMastery();
+        if (!live(token)) return;
+        mastery = read ?? [];
+        masteryReady = read !== null;
       } else {
         chatStatuses.clear();
         tab = "architect";
+        graphTopics = await readGraphTopicCount();
+        if (!live(token)) return;
       }
       ensureSelection();
-      showError(null);
+      showError(refused);
       renderAll();
 
       if (path?.architectChatId && !pane.isNewDraft() && path.id !== autoLoadedPathId) {
@@ -474,6 +575,40 @@ export function mountPathHub(
     } catch (problem) {
       if (!live(token)) return;
       showError(t("error.load", { message: problemText(problem) }));
+    }
+  }
+
+  /** Knowledge Graph mastery from `graph.mastery`. Null when the read fails, so callers show no evidence. */
+  async function readKnowledgeMastery(): Promise<readonly Mastery[] | null> {
+    try {
+      const result = await ctx.call<{ mastery: readonly Mastery[] }>("graph.mastery");
+      return Array.isArray(result.mastery) ? result.mastery : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** One saved node's graph propositions, from `graph.propositions` (the backend reads the node's own chat links). Null when the read fails. */
+  async function readNodePropositions(node: PathNode): Promise<readonly NodeProposition[] | null> {
+    if (!path) return null;
+    try {
+      const result = await ctx.call<{ propositions: readonly NodeProposition[] }>("graph.propositions", {
+        pathId: path.id,
+        nodeId: node.id,
+      });
+      return Array.isArray(result.propositions) ? result.propositions : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Topic count from the backend brief. A failed read leaves the graph-build button disabled. */
+  async function readGraphTopicCount(): Promise<number> {
+    try {
+      const result = await ctx.call<{ topics: number }>("graph.topicCount");
+      return typeof result.topics === "number" ? result.topics : 0;
+    } catch {
+      return 0;
     }
   }
 
@@ -495,7 +630,7 @@ export function mountPathHub(
       if (disposed || signal.aborted) return null;
       path = result.path;
       ensureSelection();
-      showError(null);
+      showError(refused);
       return result;
     } catch (problem) {
       if (!disposed && !signal.aborted) showError(t(failure, { message: problemText(problem) }));
@@ -713,6 +848,7 @@ export function mountPathHub(
     offResync();
     menuHandle?.dispose();
     toolbarControls.abort();
+    emptyControls.abort();
     canvas.dispose();
     inspector.dispose();
     pane.dispose();

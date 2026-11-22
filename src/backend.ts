@@ -16,6 +16,7 @@
  * runs, `cleanup` releases handlers, subscriptions, the bridge and the definition,
  * and no tool writes after the signal aborts.
  */
+import { importForkData } from "./fork-import.ts";
 import { importLegacyData } from "./legacy-import.ts";
 import { KEY_ENGINES, effectiveResearch } from "./domain.ts";
 import type { ResearchSettings } from "./domain.ts";
@@ -25,8 +26,10 @@ import { createKeyStore } from "./research/key-store.ts";
 import { createResearchNotes } from "./research/notes.ts";
 import { createResearchChats, registerResearchSessions, researchBrief } from "./research/session-research.ts";
 import { buildResearchTools } from "./research/tools.ts";
-import { applyMisconceptionsTool, buildMessage, createDeclinedChats, registerProposals } from "./diagnostic.ts";
+import { buildMessage, createDeclinedChats, registerProposals } from "./diagnostic.ts";
 import { sessionMetrics } from "./session-metrics.ts";
+import { buildGraphBrief } from "./graph-brief.ts";
+import type { BriefGraph } from "./graph-brief.ts";
 import { randomUUID } from "node:crypto";
 import type {
   ModelCatalogResponse,
@@ -36,9 +39,22 @@ import type {
 } from "learnharness-plugin-api";
 import {
   ARCHITECT_DEFINITION_ID,
+  graphBriefMessage,
   registerArchitect,
+  usageSince,
 } from "./architect-agent.ts";
 import type { ArchitectRegistration } from "./architect-agent.ts";
+import { UPSTREAM_PINNED_COMMIT, withUpstreamTimeout } from "./upstream-roadmaps.ts";
+import type { UpstreamFetch } from "./upstream-roadmaps.ts";
+
+/** The only network seam of the Architect's upstream reads (issue #19). Tests inject their own. */
+const upstreamFetch: UpstreamFetch = withUpstreamTimeout((url, init) => fetch(url, init));
+import type { GraphBrief } from "./graph-brief.ts";
+import { deriveMastery } from "./learner-map.ts";
+import { propositionsForChats } from "./node-propositions.ts";
+import type { LearnerGraph, Mastery } from "./learner-map.ts";
+import { architectLogPath, createPluginLog } from "./plugin-log.ts";
+import type { LogStep } from "./plugin-log.ts";
 import {
   ARTIFACT_TYPES,
   CHILD_SESSION_KINDS,
@@ -55,6 +71,8 @@ import type {
 } from "./domain.ts";
 import { buildChildSessionBrief } from "./framework.ts";
 import { registerNativeBridge } from "./native-bridge.ts";
+import { registerAgentGaps } from "./agent-gaps-tools.ts";
+import type { LinkedGapsSource } from "./agent-gaps-tools.ts";
 import {
   addChildLink,
   findChatLink,
@@ -79,6 +97,7 @@ import {
   EVENT_SETTINGS_CHANGED,
   EVENT_SOURCES_CHANGED,
 } from "./topics.ts";
+import { ensureDataGitignore } from "./git-safe-data.ts";
 import type { ArchitectProgress } from "./topics.ts";
 
 /** Live notification topics; consumers refetch authoritative state on receipt. */
@@ -205,6 +224,25 @@ function sameModel(a: ArchitectModelConfig, b: ArchitectModelConfig): boolean {
   return a.provider === b.provider && a.id === b.id && a.thinkingLevel === b.thinkingLevel;
 }
 
+/** The learner's knowledge graph as a brief, or null when it holds no topics to offer. */
+function learnerGraphBrief(ctx: PluginBackendContext): GraphBrief | null {
+  const graph = ctx.learning.graph();
+  const brief = buildGraphBrief({ propositions: graph.propositions ?? [], chains: graph.chains ?? [] });
+  return brief.topics.length > 0 ? brief : null;
+}
+
+/** Linked-chat source for the read-only roadmap gap tool: the chat's path and the learner's mastery. */
+function linkedGapsSource(ctx: PluginBackendContext, store: LearningPathStore): LinkedGapsSource {
+  return {
+    linked: (chatId) => findChatLink(store.paths(), chatId) !== null,
+    input: (chatId) => {
+      const located = findChatLink(store.paths(), chatId);
+      if (!located) throw new Error("This session is not linked to a roadmap node.");
+      return { path: located.path, mastery: readGraphMastery(ctx.learning) };
+    },
+  };
+}
+
 /** Native chat kinds are `teach`/`practice`; plugin links say `teaching`/`practice`. */
 function nativeKind(record: { readonly kind?: "teach" | "practice" }): ChildSessionKind {
   return record.kind === "practice" ? "practice" : "teaching";
@@ -248,7 +286,27 @@ function updateNodeInPath(
   };
 }
 
+/** Number of graph topics the learner has studied, read through the same brief the Architect gets (read-only). */
+export function readGraphTopicCount(learning: { graph(): BriefGraph }): number {
+  return buildGraphBrief(learning.graph()).counts.topics;
+}
+
+/** Per-topic mastery derived from the learner's Knowledge Graph (read-only: no writes, no model call). */
+export function readGraphMastery(learning: { graph(): LearnerGraph }): Mastery[] {
+  const graph = learning.graph();
+  return deriveMastery({ propositions: graph.propositions ?? [], chains: graph.chains ?? [] });
+}
+
 export function activate(ctx: PluginBackendContext): void {
+  // Keeps secrets and logs out of a Git-versioned data folder. Never throws.
+  ensureDataGitignore(ctx.dataDirectory);
+  // Previous fork id first: its files are newer than the Learning Paths ones.
+  try {
+    importForkData(ctx.dataDirectory);
+  } catch (problem) {
+    // An import failure must never block Roadmap itself; the old data stays untouched.
+    console.warn("[roadmap] could not import data from the previous plugin id:", problem instanceof Error ? problem.message : problem);
+  }
   try {
     importLegacyData(ctx.dataDirectory);
   } catch (problem) {
@@ -266,12 +324,39 @@ export function activate(ctx: PluginBackendContext): void {
   const debug = (event: string, detail: Record<string, unknown>): void => {
     if (process.env.ROADMAP_DEBUG === "1") console.debug("[roadmap]", event, detail);
   };
+  // Metadata-only timings of Architect steps, in <data>/logs/architect.jsonl.
+  const architectLog = createPluginLog(architectLogPath(ctx.dataDirectory));
+  // One "model call" step per Architect run: opened when a conversation is first
+  // seen running, closed when it leaves running. Token counts come from the run's messages.
+  const modelRuns = new Map<string, { step: LogStep; from: number }>();
+  const trackModelRun = (snapshot: PluginAgentSnapshot): void => {
+    const open = modelRuns.get(snapshot.id);
+    if (snapshot.status === "running") {
+      if (open) return;
+      const model = architect?.definition.model;
+      modelRuns.set(snapshot.id, {
+        step: architectLog.begin("model call", {
+          chatId: snapshot.id,
+          provider: model?.provider ?? null,
+          model: model?.id ?? null,
+        }),
+        from: snapshot.messages.length,
+      });
+      return;
+    }
+    if (!open) return;
+    modelRuns.delete(snapshot.id);
+    const finished = snapshot.status === "idle" || snapshot.status === "waiting";
+    open.step.end({ ...usageSince(snapshot.messages, open.from), status: snapshot.status, ok: finished });
+  };
   const createRequests = new Map<string, string>();
   let architect: ArchitectRegistration | null = null;
   // A settings model change saved while an Architect conversation was running;
   // applied once no Architect conversation is running.
   let pendingModel: ArchitectModelConfig | null = null;
   let activeChatId: string | null = null;
+  // The graph brief each Architect conversation was sent with (see architect.send).
+  const graphBriefs = new Map<string, GraphBrief>();
   let disposed = false;
   const notes = createResearchNotes(ctx.dataDirectory);
   const keys = createKeyStore(ctx.dataDirectory);
@@ -339,6 +424,9 @@ export function activate(ctx: PluginBackendContext): void {
     }),
   );
 
+  // Read-only roadmap gap tool for linked teacher chats (issue #11).
+  disposers.push(registerAgentGaps(ctx, linkedGapsSource(ctx, store)));
+
   disposers.push(
     registerResearchSessions(ctx, {
       chats: researchChats,
@@ -379,19 +467,21 @@ export function activate(ctx: PluginBackendContext): void {
     pendingModel = null;
     architect?.unregister();
     architect = null;
-    const tools = [
-      ...researchTools(),
-      applyMisconceptionsTool(ctx, {
-        store,
-        notes,
-        onPathChanged: (path) => emit(EVENT_PATHS_CHANGED, { id: path.id, updatedAt: path.updatedAt, change: "error" }),
-      }),
-    ];
     registeredResearch = researchSignature();
+    // Issue #19: the Architect builds the structure from the learner's graph and the pinned developer-roadmap
+    // commit. Books and web (research tools) only enrich existing nodes, and come last.
     const registration = registerArchitect(ctx, model, {
       store,
-      researchTools: tools,
+      // Book and web tools for the enrichment step only; they come last in the Architect's tool list.
+      researchTools: researchTools(),
       activeChatId: () => activeChatId,
+      graphBrief: () => (activeChatId === null ? null : (graphBriefs.get(activeChatId) ?? null)),
+      upstream: {
+        fetch: upstreamFetch,
+        commit: UPSTREAM_PINNED_COMMIT,
+        readGraph: () => learnerGraphBrief(ctx),
+      },
+      log: architectLog,
       onPathSaved: (path, created) =>
         emit(EVENT_PATHS_CHANGED, { id: path.id, created, updatedAt: path.updatedAt }),
     });
@@ -465,6 +555,7 @@ export function activate(ctx: PluginBackendContext): void {
     if (watchers.has(id)) return;
     const onChange = (snapshot: PluginAgentSnapshot): void => {
       latestSnapshots.set(id, snapshot);
+      trackModelRun(snapshot);
       // Transition updates are immediate; stream updates are sampled so the view
       // can fetch evolving reasoning/text without a request per token. The view
       // reads those ticks through architect.progress, which omits the history.
@@ -569,7 +660,30 @@ export function activate(ctx: PluginBackendContext): void {
     active: !ctx.signal.aborted,
   }));
 
-  handle("paths.list", () => ({ paths: store.paths().map(summarize) }));
+  // Refused roadmap files (for example conflict markers after a Git pull) are listed so the hub can name them.
+  handle("paths.list", () => ({
+    paths: store.paths().map(summarize),
+    refused: store.refusals().map(({ filename, code }) => ({ filename, code })),
+  }));
+
+  handle("graph.topicCount", () => ({ topics: readGraphTopicCount(ctx.learning) }));
+
+  handle("graph.mastery", () => ({ mastery: readGraphMastery(ctx.learning) }));
+
+  // One stored node's graph propositions, mapped through that node's own linked chats (read-only; issue #39).
+  // The chats come from the saved node, not from the caller, so the result never covers another node.
+  handle("graph.propositions", (input) => {
+    const value = object(input, "graph.propositions");
+    const pathId = readText(value.pathId, "pathId", { max: 128 });
+    const nodeId = readText(value.nodeId, "nodeId", { max: 128 });
+    const path = store.path(pathId);
+    if (!path) throw new Error(`Unknown path: ${pathId}`);
+    const node = findNodeById(path, nodeId);
+    if (!node) throw new Error(`Unknown node: ${nodeId}`);
+    const stored = ctx.learning.graph().propositions;
+    const chatIds = node.childSessions.map((link) => link.chatId);
+    return { propositions: propositionsForChats(chatIds, Array.isArray(stored) ? stored : []) };
+  });
 
   handle("paths.get", (input) => {
     const id = readText(object(input, "paths.get").id, "id", { max: 128 });
@@ -1166,8 +1280,12 @@ export function activate(ctx: PluginBackendContext): void {
     const requestId = readRequestId(value.requestId);
     activeChatId = id;
     watch(id);
-    debug("architect.send.request", { id, requestId, characters: text.length });
-    const conversation = await ctx.agents.send(id, text, { requestId, purpose: "user" });
+    // Opt-in: the learner's graph travels as quoted data ahead of the message.
+    const brief = value.learnerGraph === true ? learnerGraphBrief(ctx) : null;
+    if (brief) graphBriefs.set(id, brief);
+    const sent = brief ? `${graphBriefMessage(brief)}\n\n${text}` : text;
+    debug("architect.send.request", { id, requestId, characters: text.length, graphTopics: brief?.topics.length ?? 0 });
+    const conversation = await ctx.agents.send(id, sent, { requestId, purpose: "user" });
     debug("architect.send.accepted", { id, status: conversation.status });
     emit(EVENT_ARCHITECT_CHANGED, {
       id: conversation.id,
@@ -1176,6 +1294,8 @@ export function activate(ctx: PluginBackendContext): void {
     });
     return { conversation };
   });
+
+  handle("architect.logPath", () => ({ path: architectLog.path }));
 
   handle("architect.abort", (input) => {
     if (ctx.signal.aborted) throw new Error("The Roadmap plugin is shutting down.");

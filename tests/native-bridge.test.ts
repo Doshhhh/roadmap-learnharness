@@ -83,11 +83,13 @@ test("instructions exist, and native tools are injected only for linked chats of
     chat("chat-unlinked", "teach"),
   ]);
   try {
-    // The node bridge, the research-session note and roadmap proposals.
-    assert.equal(host.instructions.length, 3);
+    // The node bridge, the research-session note, roadmap proposals and the gap tool.
+    assert.equal(host.instructions.length, 4);
     assert.deepEqual(host.instructions[0]!.agents, ["prober", "teacher", "practice"]);
     assert.match(host.instructions[0]!.text, /If roadmap_get_brief is not in your current tool set, ignore this entire section/);
     assert.equal(host.instructions[0]!.text, NATIVE_BRIDGE_INSTRUCTIONS);
+    assert.match(host.instructions[0]!.text, /Question format \(count, question type, answer form\) is not set by this section/);
+    assert.match(host.instructions[0]!.text, /The brief sets content, not question format\./);
 
     const linked = await host.call<{ path: { id: string } }>("sessions.link", {
       pathId: "path-linear-algebra",

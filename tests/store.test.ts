@@ -8,12 +8,15 @@ import { DomainValidationError } from "../src/domain.ts";
 import {
   ARCHITECT_FILE,
   LEARNING_PATHS_FILE,
+  ROADMAPS_DIRECTORY,
+  ROADMAP_INDEX_FILE,
   SETTINGS_FILE,
   SOURCES_DIRECTORY,
   SOURCE_INDEX_FILE,
   STORE_SCHEMA_VERSION,
   StoreError,
   openLearningPathStore,
+  roadmapFileName,
 } from "../src/store.ts";
 import { AT, clone, makePath } from "./fixtures.ts";
 
@@ -26,6 +29,7 @@ function directory(t: { after: (fn: () => void) => void }): string {
 }
 
 const read = (dir: string, name: string): string => fs.readFileSync(path.join(dir, name), "utf8");
+const roadmapFile = (dir: string, id: string): string => path.join(dir, ROADMAPS_DIRECTORY, roadmapFileName(id));
 const write = (dir: string, name: string, content: string): void =>
   fs.writeFileSync(path.join(dir, name), content);
 const temporaryFiles = (dir: string): string[] =>
@@ -40,10 +44,10 @@ test("saves, replaces and reloads paths with a versioned envelope", (t) => {
 
   const saved = store.savePath(makePath());
   assert.deepEqual(saved, makePath());
-  const envelope = JSON.parse(read(dir, LEARNING_PATHS_FILE));
+  const envelope = JSON.parse(fs.readFileSync(roadmapFile(dir, "path-linear-algebra"), "utf8"));
   assert.equal(envelope.schemaVersion, STORE_SCHEMA_VERSION);
   assert.equal(envelope.revision, 1);
-  assert.deepEqual(envelope.paths, [makePath()]);
+  assert.deepEqual(envelope.roadmap, makePath());
 
   const second = { ...clone(makePath()), id: "path-2", title: "Second path" };
   store.savePath(second);
@@ -52,7 +56,8 @@ test("saves, replaces and reloads paths with a versioned envelope", (t) => {
   const reopened = openLearningPathStore(dir);
   assert.equal(reopened.paths().length, 2);
   assert.equal(reopened.path("path-linear-algebra")?.title, "Renamed in place");
-  assert.deepEqual(JSON.parse(read(dir, LEARNING_PATHS_FILE)).revision, 3);
+  // Revisions are per roadmap: path-linear-algebra was saved twice.
+  assert.deepEqual(JSON.parse(fs.readFileSync(roadmapFile(dir, "path-linear-algebra"), "utf8")).revision, 2);
 
   assert.equal(reopened.deletePath("path-missing"), false);
   assert.equal(reopened.deletePath("path-2"), true);
@@ -64,7 +69,7 @@ test("a failed atomic rename keeps memory, previous bytes and no temporary file"
   const dir = directory(t);
   const store = openLearningPathStore(dir);
   store.savePath(makePath());
-  const before = read(dir, LEARNING_PATHS_FILE);
+  const before = fs.readFileSync(roadmapFile(dir, "path-linear-algebra"), "utf8");
   const beforePaths = clone(store.paths());
 
   t.mock.method(fs, "renameSync", () => {
@@ -73,8 +78,8 @@ test("a failed atomic rename keeps memory, previous bytes and no temporary file"
   assert.throws(() => store.savePath({ ...makePath(), title: "Never persisted" }), /Synthetic rename failure/);
 
   assert.deepEqual(store.paths(), beforePaths);
-  assert.equal(read(dir, LEARNING_PATHS_FILE), before);
-  assert.deepEqual(temporaryFiles(dir), []);
+  assert.equal(fs.readFileSync(roadmapFile(dir, "path-linear-algebra"), "utf8"), before);
+  assert.deepEqual(temporaryFiles(path.join(dir, ROADMAPS_DIRECTORY)), []);
   assert.deepEqual(openLearningPathStore(dir).paths(), beforePaths);
 });
 
@@ -240,7 +245,7 @@ test("never touches host-reserved entries or unrelated learner files", (t) => {
   assert.deepEqual(temporaryFiles(dir), []);
   assert.deepEqual(
     fs.readdirSync(dir).sort(),
-    ["agents", "learner-notes.txt", LEARNING_PATHS_FILE, SETTINGS_FILE, SOURCES_DIRECTORY, "tasks", "usage.jsonl"].sort(),
+    ["agents", "learner-notes.txt", ROADMAPS_DIRECTORY, ROADMAP_INDEX_FILE, SETTINGS_FILE, SOURCES_DIRECTORY, "tasks", "usage.jsonl"].sort(),
   );
 });
 

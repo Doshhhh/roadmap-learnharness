@@ -106,10 +106,9 @@ test("the graph lays modules bottom-up, expands the working module and follows s
     const box = root.querySelector<HTMLElement>(".rm-box")!;
     assert.equal(box.dataset.moduleId, "module-structure");
     assert.match(box.textContent ?? "", /Structure first.*in progress · 1 \/ 3/s);
-    assert.match(box.textContent ?? "", /In order/);
     assert.match(box.textContent ?? "", /1 open error: Drops a sign while expanding\./);
-    const synthesis = root.querySelector<HTMLElement>('.rm-main[data-module-id="module-synthesis"]')!;
-    assert.ok(synthesis, "other modules are main-line nodes");
+    const synthesis = root.querySelector<HTMLElement>('.rm-box[data-module-id="module-synthesis"]')!;
+    assert.ok(synthesis, "every module is a frame in the graph");
     assert.ok(
       parseFloat(synthesis.style.top) < parseFloat(box.style.top),
       "the later module sits above the earlier one (bottom-up)",
@@ -118,7 +117,7 @@ test("the graph lays modules bottom-up, expands the working module and follows s
     assert.ok(canvasNode(fixture, "n-holistic").classList.contains("rm-done"));
     assert.ok(canvasNode(fixture, "n-skill").querySelector(".rm-node-warn"), "open errors are flagged on the node");
     assert.ok(root.querySelectorAll(".rm-edges line").length > 0);
-    assert.ok(root.querySelector(".rm-edges .rm-arrow"), "the main line points up");
+    assert.ok(root.querySelector(".rm-edges .rm-arrow"), "dependency arrows have heads");
 
     const panel = inspector(fixture);
     assert.match(panel.textContent ?? "", /Understand n-concept from first principles\./);
@@ -133,12 +132,12 @@ test("the graph lays modules bottom-up, expands the working module and follows s
     assert.equal(inspector(fixture).dataset.nodeId, "n-holistic");
 
     // Clicking a collapsed module expands it; selecting its node keeps it expanded.
-    synthesis.click();
+    root.querySelector<HTMLButtonElement>('.rm-box[data-module-id="module-synthesis"] .rm-box-head')!.click();
     await fixture.flush();
-    assert.equal(root.querySelector<HTMLElement>(".rm-box")!.dataset.moduleId, "module-synthesis");
+    assert.equal(root.querySelector<HTMLElement>(".rm-box-focus")!.dataset.moduleId, "module-synthesis");
     await selectNode(fixture, "n-contrast");
     assert.equal(inspector(fixture).dataset.nodeId, "n-contrast");
-    assert.equal(root.querySelector<HTMLElement>(".rm-box")!.dataset.moduleId, "module-synthesis");
+    assert.equal(root.querySelector<HTMLElement>(".rm-box-focus")!.dataset.moduleId, "module-synthesis");
 
     // Tree view lists modules and nodes; selection survives switching views.
     toolbar(fixture, "Tree").click();
@@ -147,8 +146,8 @@ test("the graph lays modules bottom-up, expands the working module and follows s
     assert.equal(root.querySelector<HTMLElement>(".rm-tree")!.hidden, false);
     assert.ok(canvasNode(fixture, "n-contrast").classList.contains("rm-sel"));
     assert.deepEqual(
-      [...root.querySelectorAll(".rm-tree-module .rm-tree-module-title")].map((node) => node.textContent),
-      ["Structure first", "Synthesis"],
+      [...root.querySelectorAll(".rm-tree .rm-tree-row .rm-node-title")].map((node) => node.textContent),
+      ["Node n-holistic", "Node n-concept", "Node n-skill", "Node n-contrast", "Node n-checkpoint", "Node n-bridge"],
     );
 
     // Session rows open the native chat.
@@ -199,7 +198,7 @@ test("node panel persists status and artifact choices and refreshes the map and 
     const updated = fixture.paths.get(path.id)!;
     const node = updated.modules[0]!.nodes.find((candidate) => candidate.id === "n-concept")!;
     assert.equal(effectiveArtifact(updated, node), "relational_map");
-    assert.match(inspector(fixture).querySelector(".rm-why")!.textContent ?? "", /labelled nodes and arrows/);
+    assert.match(inspector(fixture).querySelector(".rm-why")!.textContent ?? "", /labelled arrows/);
 
     // Clearing the override falls back to the path default and keeps the reason.
     setSelect(artifact(), "");
@@ -208,7 +207,7 @@ test("node panel persists status and artifact choices and refreshes the map and 
     assert.equal(afterClear.modules[0]!.nodes.find((candidate) => candidate.id === "n-concept")!.artifactConfig, null);
     assert.match(
       inspector(fixture).querySelector(".rm-why")!.textContent ?? "",
-      /short hooks keep it quick to recall/,
+      /a few short memory cues/,
       "the path default (retrieval cue) now supplies the reason",
     );
     assert.equal(ARTIFACT_CATALOG.length, 6);
@@ -510,6 +509,58 @@ test("onResync re-reads paths and the Architect conversation after missed notifi
   }
 });
 
+test("the toolbar shows only the roadmap title and its dropdown, with no breadcrumb label or separator", async () => {
+  const path = makePath();
+  const shaders = { ...makePath(), id: "path-shaders", title: "Shaders" };
+  const fixture = createViewFixture({ paths: [path, shaders] });
+  try {
+    const container = await mounted(fixture);
+    const crumb = container.querySelector<HTMLElement>(".rm-top .rm-crumb")!;
+    assert.ok(crumb, "the title lives in the toolbar crumb");
+    assert.equal(crumb.textContent, "Linear algebra from canon", "the crumb is the title alone");
+    assert.equal(container.querySelector(".rm-crumb-sep"), null, "no slash separator");
+    assert.doesNotMatch(container.querySelector(".rm-top")!.textContent ?? "", /Roadmaps/, "no 'Roadmaps' label in the toolbar");
+    assert.ok(container.querySelector(".rm-crumb-path .rm-crumb-chevron"), "the title keeps its chevron");
+    assert.equal(container.querySelector<HTMLButtonElement>(".rm-crumb-path")!.disabled, false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("the title dropdown lists every roadmap and switches between them", async () => {
+  const path = makePath();
+  const shaders = { ...makePath(), id: "path-shaders", title: "Shaders" };
+  const fixture = createViewFixture({ paths: [path, shaders] });
+  try {
+    const container = await mounted(fixture);
+    container.querySelector<HTMLButtonElement>(".rm-crumb-path")!.click();
+    await fixture.flush();
+
+    const menu = await chooseMenuItem(fixture, shaders.id);
+    assert.deepEqual(menu.items.map((item) => item.key), [path.id, shaders.id], "every roadmap is listed");
+    assert.equal(menu.label, "Roadmaps", "the menu keeps its accessible name");
+    assert.equal(container.querySelector(".rm-crumb-path")!.textContent, "Shaders", "selecting an item switches roadmaps");
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("with no roadmaps the title dropdown is disabled and opens no menu", async () => {
+  const fixture = createViewFixture();
+  try {
+    const container = await mounted(fixture);
+    const pathSwitch = container.querySelector<HTMLButtonElement>(".rm-crumb-path")!;
+    assert.equal(pathSwitch.disabled, true);
+    assert.ok(pathSwitch.querySelector(".rm-crumb-chevron"), "the disabled title keeps its chevron");
+    assert.doesNotMatch(container.querySelector(".rm-top")!.textContent ?? "", /Roadmaps/);
+    pathSwitch.click();
+    await fixture.flush();
+    assert.equal(fixture.all("openMenu").length, 0, "no menu opens without roadmaps");
+  } finally {
+    fixture.restore();
+  }
+});
+
 test("an empty view opens the Architect and does not invent a map or a node", async () => {
   const fixture = createViewFixture();
   try {
@@ -525,6 +576,21 @@ test("an empty view opens the Architect and does not invent a map or a node", as
     assert.equal(fixture.conversations.size, 0, "opening a draft does not lock in the model yet");
     assert.equal(fixture.paths.size, 0, "the Architect creates roadmaps through save_learning_path, not the toolbar");
     assert.ok(fixture.all("mountMarkdown").length === 0);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test("a refused roadmap file is named in the hub banner with the Git view to resolve it", async () => {
+  const filename = "/data/roadmaps/abc.json";
+  const fixture = createViewFixture({ paths: [makePath()], refused: [{ filename, code: "corrupt" }] });
+  try {
+    await mounted(fixture);
+    await fixture.flush();
+    const banner = fixture.root.querySelector<HTMLElement>(".rm-hub-error")!;
+    assert.equal(banner.hidden, false);
+    assert.match(banner.textContent ?? "", /\/data\/roadmaps\/abc\.json/);
+    assert.match(banner.textContent ?? "", /Resolve it in the Git view/);
   } finally {
     fixture.restore();
   }

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const project = fileURLToPath(new URL("../", import.meta.url));
 const sourceManifest = JSON.parse(fs.readFileSync(path.join(project, "manifest.json"), "utf8"));
+const packageVersion = JSON.parse(fs.readFileSync(path.join(project, "package.json"), "utf8")).version;
 
 /** A disposable copy of everything `npm run build` reads, with node_modules linked in. */
 function fixture({ manifest = sourceManifest } = {}) {
@@ -36,10 +37,10 @@ function built() {
 
 test("manifest is valid for plugin API v1 on LearnHarness 0.6.0", () => {
   assert.equal(sourceManifest.apiVersion, 1);
-  assert.equal(sourceManifest.id, "roadmap");
+  assert.equal(sourceManifest.id, "roadmap-learnharness");
   assert.equal(sourceManifest.name, "Roadmap");
   assert.match(sourceManifest.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(sourceManifest.version, "0.4.0");
+  assert.equal(sourceManifest.version, packageVersion);
   assert.equal(sourceManifest.minAppVersion, "0.6.0");
   assert.equal(sourceManifest.main, "main.js");
   assert.equal(sourceManifest.backend, "backend.cjs");
@@ -91,8 +92,8 @@ test("built backend activates and answers its operation", () => {
       registerTools: () => () => {},
     });
     assert.deepEqual(handlers.get("paths.status")(), {
-      id: "roadmap",
-      version: "0.4.0",
+      id: "roadmap-learnharness",
+      version: sourceManifest.version,
       active: true,
     });
     // Every activation resource is registered for teardown, including the

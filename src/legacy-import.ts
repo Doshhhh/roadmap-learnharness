@@ -10,6 +10,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { hasRoadmapData } from "./store.ts";
 
 export const LEGACY_PLUGIN_ID = "learning-path";
 export const IMPORT_MARKER = "imported-from-learning-path.json";
@@ -49,7 +50,9 @@ export function legacyDataDirectory(dataDirectory: string): string {
 
 export function importLegacyData(dataDirectory: string, now: () => Date = () => new Date()): LegacyImportResult {
   if (isFile(path.join(dataDirectory, IMPORT_MARKER))) return { imported: false, reason: "already-imported", copied: [] };
-  if (isFile(path.join(dataDirectory, FILES[0]))) return { imported: false, reason: "already-has-data", copied: [] };
+  if (hasRoadmapData(dataDirectory) || isFile(path.join(dataDirectory, FILES[0]))) {
+    return { imported: false, reason: "already-has-data", copied: [] };
+  }
   const legacy = legacyDataDirectory(dataDirectory);
   if (!isFile(path.join(legacy, FILES[0]))) return { imported: false, reason: "no-legacy-data", copied: [] };
 

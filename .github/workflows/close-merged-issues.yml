@@ -1,0 +1,66 @@
+name: Close merged issues
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  close:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close issues named by pushed commits
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // A commit subject ending in "(#N)" names issue N. Only open issues are closed.
+            // Issues are never reopened. Each closed issue gets a comment naming the short sha.
+            const CLOSING_REF = /\(#(\d+)\)\s*$/;
+            const commits = context.payload.commits ?? [];
+            core.info(`Pushed range ${context.payload.before}..${context.payload.after}: ${commits.length} commit(s).`);
+
+            // Push payloads list commits oldest first. Walk newest first so the first commit
+            // naming an issue is the one cited in its comment.
+            const shaByIssue = new Map();
+            for (const commit of [...commits].reverse()) {
+              const subject = (commit.message ?? "").split("\n")[0];
+              const match = CLOSING_REF.exec(subject);
+              if (match && !shaByIssue.has(Number(match[1]))) {
+                shaByIssue.set(Number(match[1]), commit.id.slice(0, 7));
+              }
+            }
+
+            const { owner, repo } = context.repo;
+            const failures = [];
+            for (const [number, shortSha] of shaByIssue) {
+              try {
+                const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: number });
+                if (issue.pull_request) {
+                  core.info(`#${number} is a pull request, skipped.`);
+                  continue;
+                }
+                if (issue.state !== "open") {
+                  core.info(`#${number} is already closed, skipped.`);
+                  continue;
+                }
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: number,
+                  body: `Closed by ${shortSha} on main.`,
+                });
+                await github.rest.issues.update({
+                  owner, repo, issue_number: number,
+                  state: "closed", state_reason: "completed",
+                });
+                core.info(`#${number} closed by ${shortSha}.`);
+              } catch (error) {
+                core.error(`#${number}: ${error.message}`);
+                failures.push(number);
+              }
+            }
+            if (failures.length > 0) {
+              core.setFailed(`Could not close issue(s): ${failures.join(", ")}`);
+            }

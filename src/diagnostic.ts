@@ -4,8 +4,8 @@
  * When the goal is wider than one topic they may offer a roadmap; after the
  * learner agrees they call `roadmap_propose` with the full diagnostic dossier.
  * The dossier is validated, size-capped and saved as a research note of origin
- * "diagnostic". The Architect builds from it and moves its misconceptions into
- * the Error Ledger of the matching nodes (`apply_dossier_misconceptions`).
+ * "diagnostic". The Architect builds from it. `applyMisconceptionsTool` (the Error
+ * Ledger move) is deliberately NOT offered to the Architect (issue #19).
  *
  * Never offered in chats linked to a roadmap node, in research sessions, in a
  * chat where the learner declined, or when the setting is off.

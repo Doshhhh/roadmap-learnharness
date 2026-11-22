@@ -110,7 +110,8 @@ test("the Architect gets the dossier rules and moves misconceptions into the Err
   assert.match(prompt, /Do not ask again for anything the dossier already answers/);
   assert.match(prompt, /bridge nodes for every prerequisite gap/);
   assert.match(prompt, /contrast node for each misconception/);
-  assert.match(prompt, /apply_dossier_misconceptions/);
+  // Issue #19: the Architect is not offered the misconception-apply tool, so the prompt never names it.
+  assert.doesNotMatch(prompt, /apply_dossier_misconceptions/);
   assert.match(buildMessage("abc", "ru"), /досье из диагностики abc/);
 
   const directory = temp();

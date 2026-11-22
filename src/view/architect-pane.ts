@@ -46,8 +46,9 @@ export interface ArchitectPane {
   refresh(conversationId: string, messageCount?: number): Promise<void>;
   /** Adopt an already authoritative snapshot (from `architect.create/send/get`). */
   setConversation(snapshot: PluginAgentSnapshot | null): void;
-  /** Open a conversation if needed, then send a plugin-authored prompt. */
-  discuss(text: string): Promise<void>;
+  /** Open a conversation if needed, then send a plugin-authored prompt.
+   * `learnerGraph` asks the backend to attach the learner's graph brief to this message. */
+  discuss(text: string, options?: { learnerGraph?: boolean }): Promise<void>;
   conversationId(): string | null;
   /** Whether the user has explicitly opened a fresh unsent draft. */
   isNewDraft(): boolean;
@@ -168,8 +169,14 @@ export function createArchitectPane(
   card.append(sourcesRow, composerHost, bar);
   const dropHint = element(document, "div", "rm-drop-hint", t("a.dropHint"));
   dropHint.hidden = true;
-  root.append(card, modelHint, dropHint);
+  const logLine = element(document, "p", "lp-architect-log");
+  root.append(card, modelHint, logLine, dropHint);
   container.append(root);
+  // The Architect's timing log lives in the plugin data folder; show where to find it.
+  ctx.call("architect.logPath", {}).then((result) => {
+    const path = (result as { path?: unknown } | null)?.path;
+    if (!signal.aborted && typeof path === "string") logLine.textContent = t("a.logPath", { path });
+  }).catch(() => undefined);
 
   let conversation: PluginAgentSnapshot | null = null;
   let draft = "";
@@ -570,7 +577,7 @@ export function createArchitectPane(
     }
   }
 
-  async function send(): Promise<void> {
+  async function send(options: { learnerGraph?: boolean } = {}): Promise<void> {
     if (signal.aborted || disposed || busy()) return;
     const text = draft.trim();
     if (!text) return;
@@ -588,6 +595,7 @@ export function createArchitectPane(
         id: conversation.id,
         text: deepResearch ? `${DEEP_RESEARCH_PREFIX}${text}` : text,
         requestId: requestId(),
+        ...(options.learnerGraph === true ? { learnerGraph: true } : {}),
       });
       if (signal.aborted || disposed) return;
       draft = "";
@@ -603,7 +611,7 @@ export function createArchitectPane(
     }
   }
 
-  async function discuss(text: string): Promise<void> {
+  async function discuss(text: string, options: { learnerGraph?: boolean } = {}): Promise<void> {
     if (signal.aborted || disposed) return;
     draft = text;
     updateComposer();
@@ -612,7 +620,7 @@ export function createArchitectPane(
       if (!id || signal.aborted || disposed) return;
     }
     if (busy()) return;
-    await send();
+    await send(options);
   }
 
   async function stop(): Promise<void> {

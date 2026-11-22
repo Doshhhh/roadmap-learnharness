@@ -25,9 +25,9 @@ import { activate } from "../src/backend.ts";
 
 export const MANIFEST: PluginManifest = {
   apiVersion: 1,
-  id: "roadmap",
+  id: "roadmap-learnharness",
   name: "Roadmap",
-  version: "0.4.0",
+  version: "0.4.1",
   minAppVersion: "0.6.0",
   main: "main.js",
   backend: "backend.cjs",
@@ -98,6 +98,8 @@ export interface HostOptions {
   readonly dataDirectory?: string;
   readonly catalog?: ModelCatalogResponse;
   readonly chats?: readonly ChatRecord[];
+  /** Knowledge Graph projection returned by ctx.learning.graph(); empty when absent. */
+  readonly graph?: { propositions: unknown[]; chains: unknown[] };
 }
 
 export function createHost(options: HostOptions = {}): TestHost {
@@ -234,7 +236,7 @@ export function createHost(options: HostOptions = {}): TestHost {
       const found = chats.get(id);
       return found ? structuredClone(found) : null;
     },
-    graph: () => ({ nodes: [], chains: [] }) as never,
+    graph: () => (options.graph ?? { nodes: [], chains: [] }) as never,
     readGraphFile: () => [] as never,
   };
 

@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Check versions agree
+        run: node scripts/check-version.mjs
+
+      - name: Check tag matches version
+        run: node -e 'const t=process.env.GITHUB_REF_NAME.replace(/^v/,""); const p=require("./package.json").version, m=require("./manifest.json").version; if (t!==p||t!==m) { console.error(`Tag ${process.env.GITHUB_REF_NAME} does not match package.json ${p} / manifest.json ${m}`); process.exit(1); } console.log(`Tag matches version ${t}`)'
+
+      - run: npm run build
+
+      # Unzipping into the plugins directory must give roadmap-learnharness/dist/manifest.json.
+      - name: Package dist as roadmap-<version>.zip
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          rm -rf stage
+          mkdir -p stage/roadmap-learnharness
+          cp -R dist stage/roadmap-learnharness/dist
+          (cd stage && zip -r -q "$GITHUB_WORKSPACE/roadmap-${VERSION}.zip" roadmap-learnharness)
+          echo "Packaged roadmap-${VERSION}.zip"
+          unzip -l "roadmap-${VERSION}.zip"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: roadmap-*.zip

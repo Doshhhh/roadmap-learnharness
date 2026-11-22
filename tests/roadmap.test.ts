@@ -12,8 +12,8 @@ import type { MessageKey } from "../src/i18n.ts";
 import { IMPORT_MARKER, importLegacyData, legacyDataDirectory } from "../src/legacy-import.ts";
 import { DEFAULT_BREAK_MS, sessionMetrics } from "../src/session-metrics.ts";
 import {
-  MAIN_H,
   PAD_BOTTOM,
+  SUB_H,
   defaultExpandedModule,
   layoutRoadmap,
   moduleCounts,
@@ -48,51 +48,57 @@ test("node roles split an expanded module into order, additional and consolidati
   assert.equal(nodeRole(makeNode("d", "checkpoint")), "consolidation");
 });
 
-test("the layout grows bottom-up, keeps the main line connected and reserves room for overlays", () => {
+test("the layout stacks module frames bottom-up and places each node in its dependency column", () => {
   const path = makePath();
-  (path.modules as PathModule[])[0] = { ...path.modules[0]!, nodes: [...alternatives(), ...path.modules[0]!.nodes] };
   const layout = layoutRoadmap(path, { expandedModuleId: "module-synthesis", showOptional: true });
 
   const [first, second] = layout.modules;
   assert.equal(first!.module.id, "module-structure");
-  assert.equal(first!.expanded, false);
   assert.equal(second!.expanded, true);
   assert.ok(second!.y + second!.h < first!.y, "the later module is drawn above the earlier one");
   assert.ok(layout.height - (first!.y + first!.h) >= PAD_BOTTOM, "space under the first module for zoom and legend");
-  assert.equal(first!.h, MAIN_H);
 
-  // Alternatives hang on the left, other nodes on the right of the main node.
-  const gcc = layout.nodes.find((placed) => placed.node.id === "gcc")!;
+  // Module order is the fallback prerequisite chain: holistic, concept, skill, contrast, checkpoint, bridge.
+  const depth = (id: string): number => layout.nodes.find((placed) => placed.node.id === id)!.depth;
+  assert.deepEqual(
+    ["n-holistic", "n-concept", "n-skill", "n-contrast", "n-checkpoint", "n-bridge"].map(depth),
+    [0, 1, 2, 3, 4, 5],
+  );
   const holistic = layout.nodes.find((placed) => placed.node.id === "n-holistic")!;
-  assert.equal(gcc.side, "left");
-  assert.ok(gcc.x + gcc.w <= first!.x);
-  assert.equal(holistic.side, "right");
-  assert.ok(holistic.x >= first!.x + first!.w);
+  const bridge = layout.nodes.find((placed) => placed.node.id === "n-bridge")!;
+  assert.ok(bridge.x > holistic.x, "deeper nodes sit further right");
 
-  // One arrowed segment joins the two modules exactly at their shapes.
-  const main = layout.edges.filter((edge) => edge.arrow);
-  assert.equal(main.length, 1);
-  assert.equal(main[0]!.y1, first!.y);
-  assert.equal(main[0]!.y2, second!.y + second!.h);
-
-  // Expanded module: checkpoint goes to Consolidation, every node is placed inside the box.
-  const labels = second!.labels.map((label) => label.text);
-  assert.deepEqual(labels, ["order", "consolidation"]);
-  for (const placed of layout.nodes.filter((entry) => entry.moduleId === "module-synthesis")) {
-    assert.equal(placed.side, "box");
-    assert.ok(placed.y > second!.y && placed.y + 28 < second!.y + second!.h);
+  // Every node sits inside its module's frame.
+  for (const placed of layout.nodes) {
+    const frame = layout.modules.find((entry) => entry.module.id === placed.moduleId)!;
+    assert.ok(placed.y >= frame.y && placed.y + SUB_H <= frame.y + frame.h, `${placed.node.id} is inside its frame`);
+    assert.ok(placed.x >= frame.x && placed.x + placed.w <= frame.x + frame.w, `${placed.node.id} is inside its frame sideways`);
   }
 });
 
-test("optional nodes can be hidden and dashed connectors mark the visible ones", () => {
+test("every prerequisite gets one arrow to each dependent node, pointing forward", () => {
+  const layout = layoutRoadmap(makePath(), { expandedModuleId: null, showOptional: true });
+  assert.equal(layout.edges.length, 5, "a chain of six nodes has five arrows");
+  for (const edge of layout.edges) {
+    assert.ok(edge.x1 < edge.x2, `arrow ${edge.from} -> ${edge.to} points right`);
+    const from = layout.nodes.find((placed) => placed.node.id === edge.from)!;
+    const to = layout.nodes.find((placed) => placed.node.id === edge.to)!;
+    assert.equal(edge.x1, from.x + from.w);
+    assert.equal(edge.x2, to.x);
+  }
+});
+
+test("optional nodes can be hidden; shown optional nodes have dashed arrows, and hiding one reconnects its neighbours", () => {
   const path = makePath();
   const nodes = path.modules[0]!.nodes.map((node) => (node.id === "n-skill" ? { ...node, optional: true } : node));
   (path.modules as PathModule[])[0] = { ...path.modules[0]!, nodes };
   const shown = layoutRoadmap(path, { expandedModuleId: null, showOptional: true });
   assert.ok(shown.nodes.some((placed) => placed.node.id === "n-skill"));
-  assert.equal(shown.edges.filter((edge) => edge.dashed).length, 1);
+  assert.equal(shown.edges.filter((edge) => edge.dashed).length, 2, "the two arrows into and out of the optional node");
   const hidden = layoutRoadmap(path, { expandedModuleId: null, showOptional: false });
   assert.ok(!hidden.nodes.some((placed) => placed.node.id === "n-skill"));
+  assert.ok(hidden.edges.some((edge) => edge.from === "n-concept" && edge.to === "n-contrast" && !edge.dashed));
+  assert.equal(hidden.edges.filter((edge) => edge.dashed).length, 0);
 });
 
 test("the expanded module defaults to the selected node's, else the first unfinished one", () => {
@@ -140,7 +146,7 @@ test("node marks, outcomes and resources validate, and bad links are refused", (
 test("display settings default sensibly and reject unknown values", () => {
   assert.deepEqual(parsePluginSettings({ artifactDefaults: {} }), { artifactDefaults: {} });
   const parsed = parsePluginSettings({ artifactDefaults: {}, display: { language: "ru" }, contentLanguage: "en" });
-  assert.deepEqual(parsed.display, { language: "ru", defaultView: "graph", showOptional: true });
+  assert.deepEqual(parsed.display, { language: "ru", defaultView: "graph", showOptional: true, patternHints: true });
   assert.equal(parsed.contentLanguage, "en");
   assert.throws(() => parsePluginSettings({ artifactDefaults: {}, display: { defaultView: "kanban" } }));
 });
@@ -154,7 +160,7 @@ function temporary(t: { after(fn: () => void): void }): string {
 test("legacy Learning Paths data is copied once and never modified", (t) => {
   const plugins = temporary(t);
   const legacy = path.join(plugins, "learning-path", "data");
-  const own = path.join(plugins, "roadmap", "data");
+  const own = path.join(plugins, "roadmap-learnharness", "data");
   assert.equal(legacyDataDirectory(own), legacy);
 
   assert.equal(importLegacyData(own).reason, "no-legacy-data");
@@ -184,7 +190,7 @@ test("legacy Learning Paths data is copied once and never modified", (t) => {
 test("legacy import does nothing when Roadmap already has data", (t) => {
   const plugins = temporary(t);
   const legacy = path.join(plugins, "learning-path", "data");
-  const own = path.join(plugins, "roadmap", "data");
+  const own = path.join(plugins, "roadmap-learnharness", "data");
   fs.mkdirSync(legacy, { recursive: true });
   fs.mkdirSync(own, { recursive: true });
   fs.writeFileSync(path.join(legacy, "learning-paths.json"), "legacy");
